@@ -19,9 +19,9 @@
   --text-secondary: 71 85 105;
   --text-tertiary: 100 116 139;
   --text-muted: 148 163 184;
-  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-bg: rgba(255, 255, 255, 0.86);
   --glass-border: rgba(15, 23, 42, 0.08);
-  --glass-light-bg: rgba(255, 255, 255, 0.55);
+  --glass-light-bg: rgba(255, 255, 255, 0.72);
   --glass-light-border: rgba(15, 23, 42, 0.06);
   --card-shadow: 0 1px 3px rgba(15, 23, 42, 0.06), 0 8px 24px rgba(15, 23, 42, 0.05);
   --card-shadow-hover: 0 4px 12px rgba(79, 70, 229, 0.10), 0 16px 40px rgba(79, 70, 229, 0.12);
@@ -45,9 +45,9 @@
   --text-secondary: 148 163 184;
   --text-tertiary: 100 116 139;
   --text-muted: 71 85 105;
-  --glass-bg: rgba(16, 19, 36, 0.62);
+  --glass-bg: rgba(16, 19, 36, 0.82);
   --glass-border: rgba(255, 255, 255, 0.09);
-  --glass-light-bg: rgba(255, 255, 255, 0.045);
+  --glass-light-bg: rgba(255, 255, 255, 0.06);
   --glass-light-border: rgba(255, 255, 255, 0.07);
   --card-shadow: 0 4px 24px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05);
   --card-shadow-hover: 0 8px 32px rgba(0, 0, 0, 0.55), 0 0 32px rgba(99, 102, 241, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.08);
@@ -156,17 +156,17 @@
 /* ============================================================
    Glass & gradient utilities
    ============================================================ */
+/* NOTE: no backdrop-filter on always-visible surfaces. The aurora background
+   animates every frame, so backdrop blur forces per-frame GPU re-compositing
+   of the whole window, which flickers on Windows GPUs. The aurora is already
+   soft radial gradients, so plain translucency looks identical without it. */
 .glass {
   background: var(--glass-bg);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
   border: 1px solid var(--glass-border);
 }
 
 .glass-light {
   background: var(--glass-light-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--glass-light-border);
 }
 
@@ -304,7 +304,6 @@
   @apply text-text-primary border active:scale-[0.98];
   background: var(--glass-light-bg);
   border-color: var(--glass-light-border);
-  backdrop-filter: blur(12px);
   transition: all 0.2s ease;
 }
 
