@@ -195,7 +195,8 @@ export class AccountService {
   async addAccount(
     token: string,
     source: Account['source'] = 'token_import',
-    prefilledInfo?: Partial<Pick<Account, 'nickname' | 'email' | 'userId' | 'avatarUrl' | 'phone' | 'refreshToken' | 'host' | 'installName' | 'tokenExpiredAt'>>
+    prefilledInfo?: Partial<Pick<Account, 'nickname' | 'email' | 'userId' | 'avatarUrl' | 'phone' | 'refreshToken' | 'host' | 'installName' | 'tokenExpiredAt'>>,
+    authBlob?: TraeAuthData
   ): Promise<Account> {
     const host = prefilledInfo?.host || 'https://api.trae.cn';
 
@@ -234,7 +235,7 @@ export class AccountService {
           host,
           installName: prefilledInfo?.installName,
           tokenExpiredAt: prefilledInfo?.tokenExpiredAt,
-        });
+        }, authBlob);
       }
     }
 
@@ -242,14 +243,18 @@ export class AccountService {
     const encryptedToken = this.crypto.encryptString(token);
     const entitlementPacksJson = entitlements.length > 0 ? JSON.stringify(entitlements) : null;
     const creditsBalance = this.computeCreditsBalance(entitlements);
+    const encryptedBlob = authBlob
+      ? this.crypto.encryptString(JSON.stringify(authBlob))
+      : null;
 
     const result = db.prepare(`
       INSERT INTO accounts (
         nickname, email, user_id, avatar_url, phone,
         token_encrypted, refresh_token, host, source, install_name,
-        credits_balance, pay_status, pay_identity_str, entitlement_packs, token_expired_at
+        credits_balance, pay_status, pay_identity_str, entitlement_packs, token_expired_at,
+        auth_blob_encrypted
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       nickname,
       email,
@@ -265,7 +270,8 @@ export class AccountService {
       payStatus.payStatus || null,
       payStatus.identityStr || null,
       entitlementPacksJson,
-      prefilledInfo?.tokenExpiredAt || null
+      prefilledInfo?.tokenExpiredAt || null,
+      encryptedBlob
     );
 
     const accountId = result.lastInsertRowid as number;
@@ -306,7 +312,7 @@ export class AccountService {
       host: localInfo.host || 'https://api.trae.cn',
       installName: localInfo.installName,
       tokenExpiredAt: localInfo.expiredAt,
-    });
+    }, localInfo.authBlob);
 
     return account;
   }
@@ -372,12 +378,17 @@ export class AccountService {
         // Local Trae storage is the source of truth: always overwrite the DB token
         // with the live local token so the stored copy is valid and decryptable.
         const encryptedToken = this.crypto.encryptString(local.token);
+        const encryptedBlob = local.authBlob
+          ? this.crypto.encryptString(JSON.stringify(local.authBlob))
+          : null;
         db.prepare(`
           UPDATE accounts
           SET token_encrypted = ?, refresh_token = COALESCE(?, refresh_token),
               token_expired_at = COALESCE(?, token_expired_at),
               host = ?, nickname = COALESCE(?, nickname), email = COALESCE(?, email),
-              avatar_url = COALESCE(?, avatar_url), updated_at = datetime('now')
+              avatar_url = COALESCE(?, avatar_url),
+              auth_blob_encrypted = COALESCE(?, auth_blob_encrypted),
+              updated_at = datetime('now')
           WHERE id = ?
         `).run(
           encryptedToken,
@@ -387,6 +398,7 @@ export class AccountService {
           local.nickname || null,
           local.email || null,
           local.avatarUrl || null,
+          encryptedBlob,
           match.id
         );
         logger.info(`[Recover] Restored token for account ${match.id} from local storage`);
@@ -412,13 +424,20 @@ export class AccountService {
 
   /**
    * Add account from OAuth flow token.
+   * After OAuth login the account is the one logged into local Trae, so the
+   * real blob in storage.json belongs to it - capture it for future switches.
    */
   async addAccountFromOAuth(token: string, host?: string, refreshToken?: string, expiredAt?: string): Promise<Account> {
+    const realBlob = this.traework.getRealAuthBlob();
+    const authBlob = realBlob && realBlob.token === token ? realBlob : undefined;
+    if (realBlob && !authBlob) {
+      logger.warn('OAuth: local storage blob belongs to a different account, skipping capture');
+    }
     return this.addAccount(token, 'oauth', {
       host: host || 'https://api.trae.cn',
       refreshToken,
       tokenExpiredAt: expiredAt,
-    });
+    }, authBlob);
   }
 
   /**
@@ -427,7 +446,8 @@ export class AccountService {
   async updateAccountToken(
     id: number,
     newToken: string,
-    extraInfo?: Partial<Pick<Account, 'refreshToken' | 'host' | 'installName' | 'tokenExpiredAt'>>
+    extraInfo?: Partial<Pick<Account, 'refreshToken' | 'host' | 'installName' | 'tokenExpiredAt'>>,
+    authBlob?: TraeAuthData
   ): Promise<Account> {
     const encryptedToken = this.crypto.encryptString(newToken);
     const db = getDatabase();
@@ -435,6 +455,10 @@ export class AccountService {
     const updates: string[] = ['token_encrypted = ?', 'updated_at = datetime(\'now\')'];
     const values: unknown[] = [encryptedToken];
 
+    if (authBlob) {
+      updates.push('auth_blob_encrypted = ?');
+      values.push(this.crypto.encryptString(JSON.stringify(authBlob)));
+    }
     if (extraInfo?.refreshToken !== undefined) {
       updates.push('refresh_token = ?');
       values.push(extraInfo.refreshToken);
@@ -763,6 +787,116 @@ export class AccountService {
   }
 
   /**
+   * Load the stored full auth blob for an account (decrypted), or null.
+   */
+  private getAccountAuthBlob(id: number): TraeAuthData | null {
+    const db = getDatabase();
+    const row = db.prepare(
+      'SELECT auth_blob_encrypted FROM accounts WHERE id = ? AND deleted_at IS NULL'
+    ).get(id) as { auth_blob_encrypted?: Buffer | null } | undefined;
+    if (!row?.auth_blob_encrypted) return null;
+    try {
+      const parsed = JSON.parse(this.crypto.decryptString(row.auth_blob_encrypted));
+      return parsed && typeof parsed === 'object' ? (parsed as TraeAuthData) : null;
+    } catch (err) {
+      logger.warn('Failed to decrypt stored auth blob:', (err as Error).message);
+      return null;
+    }
+  }
+
+  /**
+   * Persist the full auth blob for an account (encrypted with DPAPI).
+   */
+  private saveAccountAuthBlob(id: number, blob: TraeAuthData): void {
+    const db = getDatabase();
+    db.prepare(
+      "UPDATE accounts SET auth_blob_encrypted = ?, updated_at = datetime('now') WHERE id = ?"
+    ).run(this.crypto.encryptString(JSON.stringify(blob)), id);
+  }
+
+  /**
+   * Extract the expiry timestamp from a JWT access token.
+   */
+  private parseJwtExp(token: string): string | undefined {
+    try {
+      const payload = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64').toString('utf-8'));
+      if (payload?.exp && typeof payload.exp === 'number') {
+        return new Date(payload.exp * 1000).toISOString();
+      }
+    } catch {
+      // not a JWT - fall through
+    }
+    return undefined;
+  }
+
+  /**
+   * Build the complete TraeAuthData to write into storage.json when switching.
+   *
+   * Trae validates structural fields (userRegion, account.scope, loginScope,
+   * storeRegion, userTag, ...) when restoring a session from storage.json. A
+   * minimal hand-built blob makes Trae treat the session as invalid and show
+   * the logged-out state. Therefore:
+   *   1. start from the full blob stored when the account was imported;
+   *   2. else use the real blob currently in local storage.json as template;
+   *   3. else build a minimal blob with CN region defaults.
+   * In all cases the fresh token fields are applied on top, and account-level
+   * personal fields (username/avatar/mobile/email) are replaced with the
+   * target account's own values (or removed when unknown, so a template
+   * account's personal data never leaks into the written blob).
+   */
+  private buildSwitchAuthData(
+    account: Account,
+    token: string,
+    refreshToken: string | null
+  ): TraeAuthData {
+    let base = this.getAccountAuthBlob(account.id);
+    if (base) {
+      logger.info(`Switch: using stored auth blob for account ${account.id}`);
+    } else {
+      base = this.traework.getRealAuthBlob();
+      if (base) {
+        logger.info(`Switch: using local storage blob as template for account ${account.id}`);
+      }
+    }
+
+    const authData: TraeAuthData = {
+      ...(base || {}),
+      token,
+      refreshToken: refreshToken || base?.refreshToken,
+      userId: account.userId || base?.userId || '',
+      host: account.host || base?.host,
+      expiredAt: this.parseJwtExp(token) || account.tokenExpiredAt || base?.expiredAt,
+      account: { ...(base?.account || {}) } as TraeAuthData['account'],
+    };
+
+    if (!authData.userRegion) {
+      authData.userRegion = { region: 'CN', _aiRegion: 'CN' };
+    }
+
+    const acc: Record<string, unknown> = { ...(authData.account || {}) };
+    if (account.nickname) {
+      acc.username = account.nickname;
+      acc.nickname = account.nickname;
+    }
+    const personal: Array<[string, string | null | undefined]> = [
+      ['avatar_url', account.avatarUrl],
+      ['avatarUrl', account.avatarUrl],
+      ['nonPlainTextMobile', account.phone],
+      ['email', account.email],
+    ];
+    for (const [key, value] of personal) {
+      if (value) {
+        acc[key] = value;
+      } else {
+        delete acc[key];
+      }
+    }
+    authData.account = acc as TraeAuthData['account'];
+
+    return authData;
+  }
+
+  /**
    * Switch Traework to use the specified account.
    *
    * @param options.autoCloseTrae 切号前自动关闭 Trae（若在运行）
@@ -804,25 +938,13 @@ export class AccountService {
     // Use a valid (live) token for switching
     const { token, refreshToken } = await this.ensureValidToken(account);
 
-    // Build auth data for switching
-    const authData: TraeAuthData = {
-      token,
-      refreshToken: refreshToken || undefined,
-      userId: account.userId || '',
-      host: account.host,
-      expiredAt: account.tokenExpiredAt || undefined,
-    };
-
-    if (account.nickname || account.email || account.avatarUrl) {
-      authData.account = {
-        username: account.nickname,
-        nickname: account.nickname,
-        email: account.email || undefined,
-        avatar_url: account.avatarUrl || undefined,
-        avatarUrl: account.avatarUrl || undefined,
-        nonPlainTextMobile: account.phone || undefined,
-      };
-    }
+    // Build the complete auth blob for switching. Trae validates fields like
+    // userRegion / scope / loginScope when reading storage.json; a hand-built
+    // minimal blob makes Trae fall back to the logged-out state. So:
+    // 1) use the full blob captured when the account was imported, or
+    // 2) use the current real blob from local storage.json as a template, or
+    // 3) build a minimal one with default region fields (last resort).
+    const authData = this.buildSwitchAuthData(account, token, refreshToken);
 
     // Switch in every existing Trae storage so all installations (Trae CN /
     // TRAE SOLO CN) pick up the new account
@@ -836,6 +958,14 @@ export class AccountService {
 
     for (const target of targets) {
       await this.traework.switchAccount(authData, target.storagePath, { allowRunning: true });
+    }
+
+    // Persist the full blob back onto the account record so future switches
+    // (and older accounts imported before this column existed) always have it.
+    try {
+      this.saveAccountAuthBlob(id, authData);
+    } catch (err) {
+      logger.warn('Failed to persist auth blob after switch:', (err as Error).message);
     }
 
     // Update active flag

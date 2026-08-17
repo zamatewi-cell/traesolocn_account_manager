@@ -27,17 +27,17 @@ export function TitleBar() {
         <span className="text-sm font-medium text-gradient">{t.window.title}</span>
       </div>
 
-      <div className="flex items-center">
+      <div className="flex items-center gap-1 pr-2">
         <button
           onClick={() => window.electronAPI.window.minimize()}
-          className="w-12 h-10 flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-surface/10 transition-colors"
+          className="titlebar-btn"
           title={t.common.minimize}
         >
           <Minus className="w-4 h-4" />
         </button>
         <button
           onClick={() => window.electronAPI.window.maximize()}
-          className="w-12 h-10 flex items-center justify-center text-text-tertiary hover:text-text-primary hover:bg-surface/10 transition-colors"
+          className="titlebar-btn"
           title={isMaximized ? t.common.restore : t.common.maximize}
         >
           {isMaximized ? (
@@ -48,7 +48,7 @@ export function TitleBar() {
         </button>
         <button
           onClick={() => window.electronAPI.window.close()}
-          className="w-12 h-10 flex items-center justify-center text-text-tertiary hover:text-white hover:bg-red-500 transition-colors"
+          className="titlebar-btn titlebar-btn-close"
           title={t.common.close}
         >
           <X className="w-4 h-4" />

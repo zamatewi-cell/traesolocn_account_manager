@@ -251,6 +251,30 @@ export class TraeworkService {
   }
 
   /**
+   * Get the full decrypted auth blob currently present in any local Trae
+   * installation. Used as a structural template when switching to an account
+   * that has no stored blob: real Trae-written blobs contain fields (userRegion,
+   * scope, loginScope, ...) that Trae requires to consider the session valid.
+   * Picks the MOST COMPLETE blob across installations - one of them may hold a
+   * minimal blob previously written by this app, which would be useless as a
+   * template.
+   */
+  getRealAuthBlob(): TraeAuthData | null {
+    let best: TraeAuthData | null = null;
+    let bestScore = -1;
+    for (const { data } of this.readAllStorages()) {
+      const blob = this.decryptAuthData(data);
+      if (!blob?.token) continue;
+      const score = this.blobCompleteness(blob);
+      if (score > bestScore) {
+        best = blob;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  /**
    * Detect local Traework accounts from all installations.
    * Returns a list of detected local accounts (may be multiple from different installations).
    * Prioritizes accounts with non-expired tokens.
@@ -268,14 +292,15 @@ export class TraeworkService {
 
       const userId = authData.userId;
       if (userId && seenUserIds.has(userId)) {
-        // Already have this user from another install - skip duplicate
-        // But prefer non-expired tokens; if existing entry has expired token, replace it
+        // Already have this user from another install - skip duplicate.
+        // Prefer: non-expired token, then the more complete blob (one install
+        // may hold a minimal blob previously written by this app).
         const existing = accounts.find(a => a.userId === userId);
         if (existing) {
           const existingExpired = existing.expiredAt ? new Date(existing.expiredAt) < new Date() : true;
           const newExpired = authData.expiredAt ? new Date(authData.expiredAt) < new Date() : false;
-          if (existingExpired && !newExpired) {
-            // Replace existing (expired) entry with this one
+          const betterBlob = this.blobCompleteness(authData) > this.blobCompleteness(existing.authBlob);
+          if ((existingExpired && !newExpired) || (betterBlob && existingExpired === newExpired)) {
             const idx = accounts.indexOf(existing);
             accounts[idx] = this.buildLocalAccountInfo(installName, storagePath, authData);
           }
@@ -290,6 +315,22 @@ export class TraeworkService {
     }
 
     return accounts;
+  }
+
+  /**
+   * Score how structurally complete an auth blob is. Trae-written blobs carry
+   * userRegion / scope / loginScope etc.; minimal blobs written by older
+   * versions of this app do not.
+   */
+  private blobCompleteness(blob?: TraeAuthData | null): number {
+    if (!blob) return -1;
+    let score = 0;
+    if (blob.userRegion) score += 2;
+    if (blob.account?.scope) score += 2;
+    if (blob.account?.loginScope) score += 1;
+    if (blob.refreshExpiredAt) score += 1;
+    if (blob.account?.userTag) score += 1;
+    return score;
   }
 
   private buildLocalAccountInfo(installName: string, storagePath: string, authData: TraeAuthData): LocalAccountInfo {
@@ -313,6 +354,7 @@ export class TraeworkService {
       expiredAt: authData.expiredAt,
       userRegion: authData.userRegion?.region || authData.userRegion?._aiRegion,
       accountInfo: authData.account,
+      authBlob: authData,
     };
   }
 

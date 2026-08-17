@@ -8,6 +8,7 @@ import type { Account, UsageRecord } from '../../../shared/types';
 interface AccountCardProps {
   account: Account;
   isCheckingIn: boolean;
+  isSwitching: boolean;
   onCheckin: () => void;
   onRefresh: () => void;
   onSwitch: () => void;
@@ -38,7 +39,7 @@ function getRangeStart(range: UsageRange): number {
   return Math.floor((now.getTime() - days * 24 * 3600 * 1000) / 1000);
 }
 
-export function AccountCard({ account, isCheckingIn, onCheckin, onRefresh, onSwitch, onDelete }: AccountCardProps) {
+export function AccountCard({ account, isCheckingIn, isSwitching, onCheckin, onRefresh, onSwitch, onDelete }: AccountCardProps) {
   const { t } = useLanguage();
   const [showMenu, setShowMenu] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
@@ -231,10 +232,23 @@ export function AccountCard({ account, isCheckingIn, onCheckin, onRefresh, onSwi
           {!account.isActive && (
             <button
               onClick={onSwitch}
-              className="btn btn-primary text-sm py-2 px-4 flex items-center gap-2"
+              disabled={isSwitching}
+              className={cn(
+                'btn btn-primary text-sm py-2 px-4 flex items-center gap-2',
+                isSwitching && 'opacity-80 cursor-wait'
+              )}
             >
-              <LogIn className="w-4 h-4" />
-              {t.accounts.switchToThis}
+              {isSwitching ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {t.accounts.switching}
+                </>
+              ) : (
+                <>
+                  <LogIn className="w-4 h-4" />
+                  {t.accounts.switchToThis}
+                </>
+              )}
             </button>
           )}
 
@@ -269,7 +283,7 @@ export function AccountCard({ account, isCheckingIn, onCheckin, onRefresh, onSwi
                     {t.accounts.refreshData}
                   </button>
 
-                  {!account.isActive && (
+                  {!account.isActive && !isSwitching && (
                     <button
                       onClick={() => { setShowMenu(false); onSwitch(); }}
                       className="w-full px-3 py-2 text-left text-sm text-text-secondary hover:text-text-primary hover:bg-surface/10 flex items-center gap-2"

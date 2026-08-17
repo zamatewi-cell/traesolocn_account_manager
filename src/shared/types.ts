@@ -134,6 +134,8 @@ export interface LocalAccountInfo {
   expiredAt?: string;
   userRegion?: string;
   accountInfo?: TraeAccountInfo;
+  /** Complete decrypted auth blob straight from storage.json (all fields). */
+  authBlob?: TraeAuthData;
 }
 
 export interface ExportAccount {

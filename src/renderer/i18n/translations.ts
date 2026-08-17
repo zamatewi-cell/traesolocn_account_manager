@@ -70,6 +70,7 @@ export interface Translations {
     checkin: string;
     refreshData: string;
     switchToThis: string;
+    switching: string;
     deleteAccount: string;
     clickToConfirm: string;
     deselectedAll: string;
@@ -309,6 +310,7 @@ const en: Translations = {
     checkin: 'Checkin',
     refreshData: 'Refresh data',
     switchToThis: 'Switch to this account',
+    switching: 'Switching...',
     deleteAccount: 'Delete account',
     clickToConfirm: 'Click again to confirm',
     deselectedAll: 'Deselect all',
@@ -542,6 +544,7 @@ const zh: Translations = {
     checkin: '签到',
     refreshData: '刷新数据',
     switchToThis: '切换到此账号',
+    switching: '切换中…',
     deleteAccount: '删除账号',
     clickToConfirm: '再次点击确认删除',
     deselectedAll: '取消全选',

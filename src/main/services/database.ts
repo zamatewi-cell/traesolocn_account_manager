@@ -100,6 +100,10 @@ function runMigrations(db: Database.Database): void {
     { col: 'token_expired_at', def: 'TEXT' },
     { col: 'today_usage', def: 'REAL NOT NULL DEFAULT 0' },
     { col: 'total_usage', def: 'REAL NOT NULL DEFAULT 0' },
+    // Full decrypted auth blob (encrypted with DPAPI) captured at import time.
+    // Required for account switching: Trae validates userRegion/scope/loginScope
+    // fields and falls back to logged-out state when they are missing.
+    { col: 'auth_blob_encrypted', def: 'BLOB' },
   ];
 
   for (const { col, def } of migrations) {

@@ -19,6 +19,7 @@ export function AccountListPage({ onOpenAddDialog }: AccountListPageProps) {
     loading,
     refreshing,
     checkingIn,
+    switching,
     refreshAll,
     exportAccounts,
     deleteAccount,
@@ -245,6 +246,7 @@ export function AccountListPage({ onOpenAddDialog }: AccountListPageProps) {
                   <AccountCard
                     account={account}
                     isCheckingIn={checkingIn.has(account.id)}
+                    isSwitching={switching.has(account.id)}
                     onCheckin={() => checkinSingle(account.id)}
                     onRefresh={() => refreshAll()}
                     onSwitch={() => switchAccount(account.id)}

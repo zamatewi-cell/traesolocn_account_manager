@@ -8,6 +8,7 @@ function useAccountsState() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [checkingIn, setCheckingIn] = useState<Set<number>>(new Set());
+  const [switching, setSwitching] = useState<Set<number>>(new Set());
   const [batchCheckingIn, setBatchCheckingIn] = useState(false);
   const { showToast } = useToast();
   const { t } = useLanguage();
@@ -178,6 +179,9 @@ function useAccountsState() {
   }, [showToast, t]);
 
   const switchAccount = useCallback(async (id: number): Promise<boolean> => {
+    // Immediate UI feedback: the whole flow (process detection, close Trae,
+    // write storage, restart) can take 5-15s, so mark the card right away.
+    setSwitching(prev => new Set(prev).add(id));
     try {
       // Read app settings to decide whether to auto-manage Trae
       let autoCloseTrae = false;
@@ -227,6 +231,12 @@ function useAccountsState() {
     } catch (err) {
       showToast(t.toast.failedSwitch + ': ' + (err as Error).message, 'error');
       return false;
+    } finally {
+      setSwitching(prev => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
   }, [showToast, t]);
 
@@ -292,6 +302,7 @@ function useAccountsState() {
     loading,
     refreshing,
     checkingIn,
+    switching,
     batchCheckingIn,
     loadAccounts,
     refreshAccount,

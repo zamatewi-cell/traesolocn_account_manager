@@ -41,13 +41,11 @@ export function createMainWindow(): BrowserWindow {
     minWidth: 900,
     minHeight: 600,
     frame: false, // Frameless for custom titlebar
+    // No titleBarOverlay: it makes Windows draw its own light-themed window
+    // controls over the top-right corner, clashing with the custom dark
+    // glass titlebar. The HTML TitleBar handles min/max/close itself.
     titleBarStyle: 'hidden',
-    titleBarOverlay: {
-      color: '#f4f6fa',
-      symbolColor: '#475569',
-      height: 40,
-    },
-    backgroundColor: '#f4f6fa',
+    backgroundColor: '#0d0f1d',
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'index.js'),
       contextIsolation: true,
