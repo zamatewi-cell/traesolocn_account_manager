@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+release/
+
+# Diagnostic / temp files
+diag-*.png
+diag-*.js
+inspect-db.js
+*.log
+
+# Stray compiled output inside src
+src/shared/*.js
+src/shared/*.js.map
+
+# Environment
+.env
+.env.*
+
+# OS
+Thumbs.db
+.DS_Store
