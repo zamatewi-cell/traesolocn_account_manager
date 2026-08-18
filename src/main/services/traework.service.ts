@@ -26,6 +26,18 @@ export class TraeworkService {
   private crypto = getCryptoService();
 
   /**
+   * Check whether a path points to this app's own executable.
+   * The process query "Name LIKE 'Trae%'" also matches "Trae Account Manager.exe",
+   * so every detection result must be filtered through this check.
+   */
+  private isSelfExePath(p: string): boolean {
+    if (!p) return false;
+    const lower = p.toLowerCase();
+    if (process.execPath && lower === process.execPath.toLowerCase()) return true;
+    return path.basename(lower) === 'trae account manager.exe';
+  }
+
+  /**
    * Check if any Traework instance is currently running.
    */
   async isTraeworkRunning(): Promise<boolean> {
@@ -71,15 +83,18 @@ export class TraeworkService {
   async getRunningTraeExePaths(): Promise<string[]> {
     const paths: string[] = [];
     try {
+      // Exclude our own "Trae Account Manager.exe" process, which also matches
+      // "Name LIKE 'Trae%'" — matching it made auto-detect return this app's path.
+      // WQL has no NOT LIKE, so the exclusion goes through Where-Object.
       const { stdout } = await execAsync(
-        `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name LIKE 'Trae%'\\" | Select-Object -ExpandProperty ExecutablePath"`,
+        `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name LIKE 'Trae%'\\" | Where-Object { $_.Name -notlike '*Account Manager*' } | Select-Object -ExpandProperty ExecutablePath"`,
         { timeout: 15000 }
       );
       for (const line of stdout.split('\n')) {
         const p = line.trim();
-        if (p && p.toLowerCase().endsWith('.exe') && fs.existsSync(p) && !paths.includes(p)) {
-          paths.push(p);
-        }
+        if (!p || !p.toLowerCase().endsWith('.exe') || !fs.existsSync(p)) continue;
+        if (this.isSelfExePath(p)) continue;
+        if (!paths.includes(p)) paths.push(p);
       }
     } catch (err) {
       logger.warn('Failed to enumerate running Trae processes:', err);
@@ -102,9 +117,10 @@ export class TraeworkService {
       return runningPaths[0];
     }
 
-    // 2. Last known path captured from a previous run
+    // 2. Last known path captured from a previous run. Reject stale values
+    //    pointing at this app's own exe (cached by older buggy builds).
     const lastKnown = store.get('lastKnownTraeExe', '') as string;
-    if (lastKnown && fs.existsSync(lastKnown)) {
+    if (lastKnown && fs.existsSync(lastKnown) && !this.isSelfExePath(lastKnown)) {
       logger.info(`Using last known Trae exe path: ${lastKnown}`);
       return lastKnown;
     }
