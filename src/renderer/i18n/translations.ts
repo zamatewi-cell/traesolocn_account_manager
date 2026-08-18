@@ -32,7 +32,6 @@ export interface Translations {
   app: {
     title: string;
     subtitle: string;
-    version: string;
   };
 
   // Navigation
@@ -174,6 +173,20 @@ export interface Translations {
     languageDescription: string;
     english: string;
     chinese: string;
+    checkUpdate: string;
+    checkingUpdate: string;
+    upToDate: string;
+    newVersionAvailable: (version: string) => string;
+    downloadAndInstall: string;
+    downloadingUpdate: string;
+    installNow: string;
+    updateDownloaded: string;
+    releaseNotes: string;
+    viewReleasePage: string;
+    updateCheckFailed: string;
+    updateDownloadFailed: string;
+    updateInstallFailed: string;
+    updateNoInstaller: string;
   };
 
   // Add account dialog
@@ -274,7 +287,6 @@ const en: Translations = {
   app: {
     title: 'Trae Manager',
     subtitle: 'Multi-Account Tool',
-    version: 'v1.0.0',
   },
 
   nav: {
@@ -411,6 +423,20 @@ const en: Translations = {
     languageDescription: 'Choose your preferred display language',
     english: 'English',
     chinese: '简体中文',
+    checkUpdate: 'Check for Updates',
+    checkingUpdate: 'Checking...',
+    upToDate: 'You are on the latest version',
+    newVersionAvailable: (version) => `New version v${version} available`,
+    downloadAndInstall: 'Download & Install',
+    downloadingUpdate: 'Downloading',
+    installNow: 'Install Now',
+    updateDownloaded: 'Update downloaded',
+    releaseNotes: 'Release Notes',
+    viewReleasePage: 'View on GitHub',
+    updateCheckFailed: 'Failed to check for updates',
+    updateDownloadFailed: 'Failed to download update',
+    updateInstallFailed: 'Failed to launch installer',
+    updateNoInstaller: 'No installer attached to this release',
   },
 
   addAccount: {
@@ -508,7 +534,6 @@ const zh: Translations = {
   app: {
     title: 'Trae 管理器',
     subtitle: '多账号工具',
-    version: 'v1.0.0',
   },
 
   nav: {
@@ -645,6 +670,20 @@ const zh: Translations = {
     languageDescription: '选择您偏好的显示语言',
     english: 'English',
     chinese: '简体中文',
+    checkUpdate: '检查更新',
+    checkingUpdate: '检查中...',
+    upToDate: '已是最新版本',
+    newVersionAvailable: (version) => `发现新版本 v${version}`,
+    downloadAndInstall: '下载并安装',
+    downloadingUpdate: '下载中',
+    installNow: '立即安装',
+    updateDownloaded: '更新已下载完成',
+    releaseNotes: '更新日志',
+    viewReleasePage: '在 GitHub 上查看',
+    updateCheckFailed: '检查更新失败',
+    updateDownloadFailed: '下载更新失败',
+    updateInstallFailed: '启动安装程序失败',
+    updateNoInstaller: '该版本未附带安装包',
   },
 
   addAccount: {

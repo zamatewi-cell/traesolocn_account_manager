@@ -59,7 +59,7 @@ if (!run('npm run build')) {
 
 // Step 2: Run electron-builder --dir (may fail at rcedit but files will be copied)
 console.log('\n[2/4] Packaging with electron-builder (unpacked)...');
-const packResult = run('npx electron-builder --dir');
+const packResult = run('npx electron-builder --dir --publish never');
 if (!packResult) {
   console.log('\nNote: electron-builder reported an error (likely rcedit).');
   console.log('Continuing to apply icon/version patch...');
@@ -83,7 +83,7 @@ if (!run('node scripts/patch-exe.js')) {
 if (MAKE_DIST) {
   console.log('\n[4/4] Creating NSIS installer...');
   // Use --prepackaged to point to our already-patched app
-  const distResult = run(`npx electron-builder --prepackaged "${UNPACKED_DIR}"`);
+  const distResult = run(`npx electron-builder --prepackaged "${UNPACKED_DIR}" --publish never`);
   if (!distResult) {
     console.error('ERROR: Failed to create installer!');
     process.exit(1);

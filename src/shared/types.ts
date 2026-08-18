@@ -186,6 +186,29 @@ export interface AppSettings {
   traeExePath: string;
 }
 
+// Installer asset attached to a GitHub release
+export interface UpdateAsset {
+  name: string;
+  url: string;
+  size: number;
+}
+
+// Result of a GitHub Releases update check
+export interface UpdateInfo {
+  updateAvailable: boolean;
+  currentVersion: string;
+  latestVersion: string;
+  releaseUrl: string;
+  releaseNotes: string;
+  asset: UpdateAsset | null;
+}
+
+// Progress of an update installer download
+export interface UpdateProgress {
+  received: number;
+  total: number;
+}
+
 // Detailed usage record for a single session
 export interface UsageRecord {
   session_id: string;
@@ -235,6 +258,12 @@ export const IPC_CHANNELS = {
   APP_DETECT_TRAE_EXE: 'app:detect-trae-exe',
   APP_CLOSE_TRAEWORK: 'app:close-traework',
   APP_LAUNCH_TRAEWORK: 'app:launch-traework',
+  APP_GET_VERSION: 'app:get-version',
+  APP_CHECK_UPDATE: 'app:check-update',
+  APP_DOWNLOAD_UPDATE: 'app:download-update',
+  APP_INSTALL_UPDATE: 'app:install-update',
+  APP_OPEN_RELEASE_PAGE: 'app:open-release-page',
+  UPDATE_DOWNLOAD_PROGRESS: 'update:download-progress',
 } as const;
 
 // IPC response wrapper

@@ -1,8 +1,9 @@
-import { ipcMain, dialog } from 'electron';
+import { ipcMain, dialog, app } from 'electron';
 import { getAccountService } from '../services/account.service';
 import { getAuthService } from '../services/auth.service';
 import { getTraeworkService } from '../services/traework.service';
 import { getCheckinService } from '../services/checkin.service';
+import { getUpdateService } from '../services/update.service';
 import { IPC_CHANNELS } from '../../shared/types';
 import { logger } from '../utils/logger';
 import { store } from '../utils/store';
@@ -30,6 +31,7 @@ export function registerAccountIpcHandlers(): void {
   const authService = getAuthService();
   const traeworkService = getTraeworkService();
   const checkinService = getCheckinService();
+  const updateService = getUpdateService();
 
   // Get all accounts
   ipcMain.handle(IPC_CHANNELS.ACCOUNT_LIST, async (): Promise<AnyResponse> => {
@@ -309,6 +311,57 @@ export function registerAccountIpcHandlers(): void {
     try {
       const launched = await traeworkService.launchTraework(exePath);
       return { success: true, data: { launched } };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Get app version
+  ipcMain.handle(IPC_CHANNELS.APP_GET_VERSION, (): AnyResponse => {
+    return { success: true, data: { version: app.getVersion() } };
+  });
+
+  // Check for updates against GitHub Releases
+  ipcMain.handle(IPC_CHANNELS.APP_CHECK_UPDATE, async (): Promise<AnyResponse> => {
+    try {
+      const info = await updateService.checkForUpdates();
+      return { success: true, data: info };
+    } catch (err) {
+      logger.error('Update check failed:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Download update installer (progress via UPDATE_DOWNLOAD_PROGRESS events)
+  ipcMain.handle(IPC_CHANNELS.APP_DOWNLOAD_UPDATE, async (_event, { url, name }: { url: string; name: string }): Promise<AnyResponse> => {
+    try {
+      const installerPath = await updateService.downloadUpdate(url, name);
+      return { success: true, data: { installerPath } };
+    } catch (err) {
+      logger.error('Update download failed:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Run downloaded installer and quit the app
+  ipcMain.handle(IPC_CHANNELS.APP_INSTALL_UPDATE, async (_event, { installerPath }: { installerPath: string }): Promise<AnyResponse> => {
+    try {
+      const launched = await updateService.installUpdate(installerPath);
+      return { success: true, data: { launched } };
+    } catch (err) {
+      logger.error('Update install failed:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Open a GitHub release page in the default browser (only github.com URLs)
+  ipcMain.handle(IPC_CHANNELS.APP_OPEN_RELEASE_PAGE, async (_event, { url }: { url: string }): Promise<AnyResponse> => {
+    try {
+      if (!/^https:\/\/github\.com\//.test(url)) {
+        throw new Error('仅允许打开 GitHub 链接');
+      }
+      updateService.openReleasePage(url);
+      return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

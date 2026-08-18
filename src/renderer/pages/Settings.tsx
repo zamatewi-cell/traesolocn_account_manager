@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Settings as SettingsIcon, Download, Upload, Info, Globe, Check, RefreshCw, FolderSearch, Power, Rocket, FileCode2 } from 'lucide-react';
+import { Settings as SettingsIcon, Download, Upload, Info, Globe, Check, RefreshCw, FolderSearch, Power, Rocket, FileCode2, Sparkles, ExternalLink } from 'lucide-react';
 import { useAccounts } from '../hooks/useAccounts';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useToast } from '../contexts/ToastContext';
 import { cn } from '../lib/utils';
-import type { Language, AppSettings } from '../../../shared/types';
+import type { Language, AppSettings, UpdateInfo, UpdateProgress } from '../../../shared/types';
 
 export function SettingsPage() {
   const { t, language, setLanguage } = useLanguage();
@@ -18,13 +18,35 @@ export function SettingsPage() {
   });
   const [detecting, setDetecting] = useState(false);
 
-  // Load settings on mount
+  // Update-related state
+  const [appVersion, setAppVersion] = useState('');
+  const [checking, setChecking] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [progress, setProgress] = useState<UpdateProgress | null>(null);
+  const [installerPath, setInstallerPath] = useState<string | null>(null);
+  const [installing, setInstalling] = useState(false);
+
+  // Load settings and app version on mount
   useEffect(() => {
     window.electronAPI.app.getSettings().then(result => {
       if (result.success && result.data) {
         setSettings(result.data);
       }
     });
+    window.electronAPI.app.getVersion().then(result => {
+      if (result.success && result.data?.version) {
+        setAppVersion(`v${result.data.version}`);
+      }
+    });
+  }, []);
+
+  // Subscribe to download progress events from the main process
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.app.onUpdateDownloadProgress(p => {
+      setProgress(p);
+    });
+    return unsubscribe;
   }, []);
 
   const saveSettings = useCallback((patch: Partial<AppSettings>) => {
@@ -49,6 +71,69 @@ export function SettingsPage() {
       showToast(t.settings.pathNotFound, 'warning');
     } finally {
       setDetecting(false);
+    }
+  };
+
+  const handleCheckUpdate = async () => {
+    setChecking(true);
+    setUpdateInfo(null);
+    setInstallerPath(null);
+    setProgress(null);
+    try {
+      const result = await window.electronAPI.app.checkForUpdate();
+      if (result.success && result.data) {
+        setUpdateInfo(result.data);
+        if (!result.data.updateAvailable) {
+          showToast(t.settings.upToDate, 'success');
+        }
+      } else {
+        showToast(result.error || t.settings.updateCheckFailed, 'error');
+      }
+    } catch {
+      showToast(t.settings.updateCheckFailed, 'error');
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const handleDownloadUpdate = async () => {
+    if (!updateInfo?.asset) return;
+    setDownloading(true);
+    setProgress({ received: 0, total: updateInfo.asset.size });
+    try {
+      const result = await window.electronAPI.app.downloadUpdate(updateInfo.asset.url, updateInfo.asset.name);
+      if (result.success && result.data) {
+        setInstallerPath(result.data.installerPath);
+        showToast(t.settings.updateDownloaded, 'success');
+      } else {
+        showToast(result.error || t.settings.updateDownloadFailed, 'error');
+      }
+    } catch {
+      showToast(t.settings.updateDownloadFailed, 'error');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    if (!installerPath) return;
+    setInstalling(true);
+    try {
+      const result = await window.electronAPI.app.installUpdate(installerPath);
+      if (!result.success) {
+        showToast(result.error || t.settings.updateInstallFailed, 'error');
+        setInstalling(false);
+      }
+      // On success the main process quits this app to run the installer
+    } catch {
+      showToast(t.settings.updateInstallFailed, 'error');
+      setInstalling(false);
+    }
+  };
+
+  const handleOpenReleasePage = () => {
+    if (updateInfo?.releaseUrl) {
+      window.electronAPI.app.openReleasePage(updateInfo.releaseUrl);
     }
   };
 
@@ -287,7 +372,21 @@ export function SettingsPage() {
           <div className="space-y-3">
             <div className="flex items-center justify-between py-2">
               <span className="text-text-secondary">{t.settings.version}</span>
-              <span className="text-text-primary font-medium">{t.app.version}</span>
+              <div className="flex items-center gap-3">
+                <span className="text-text-primary font-medium">{appVersion}</span>
+                <button
+                  onClick={handleCheckUpdate}
+                  disabled={checking || downloading}
+                  className="btn btn-secondary flex items-center gap-2 !py-1.5 !px-3 !text-xs"
+                >
+                  {checking ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="w-3.5 h-3.5" />
+                  )}
+                  {checking ? t.settings.checkingUpdate : t.settings.checkUpdate}
+                </button>
+              </div>
             </div>
             <div className="flex items-center justify-between py-2">
               <span className="text-text-secondary">{t.settings.accountsStored}</span>
@@ -298,6 +397,90 @@ export function SettingsPage() {
               <span className="text-text-tertiary text-sm font-mono">%APPDATA%/Trae Account Manager</span>
             </div>
           </div>
+
+          {/* Update panel (visible after a check finds a newer version) */}
+          {updateInfo?.updateAvailable && (
+            <div className="mt-4 p-4 rounded-xl bg-cyan-500/10 border border-cyan-500/20">
+              <div className="flex items-center gap-2 mb-3">
+                <Sparkles className="w-4 h-4 text-cyan-400" />
+                <p className="text-sm font-medium text-cyan-400">
+                  {t.settings.newVersionAvailable(updateInfo.latestVersion)}
+                </p>
+                <button
+                  onClick={handleOpenReleasePage}
+                  className="ml-auto flex items-center gap-1 text-xs text-text-tertiary hover:text-text-secondary transition-colors"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  {t.settings.viewReleasePage}
+                </button>
+              </div>
+
+              {updateInfo.releaseNotes && (
+                <div className="mb-3">
+                  <p className="text-xs text-text-tertiary mb-1">{t.settings.releaseNotes}</p>
+                  <pre className="text-xs text-text-secondary whitespace-pre-wrap max-h-32 overflow-y-auto font-sans bg-surface/5 rounded-lg p-2 border border-surface/10">
+                    {updateInfo.releaseNotes}
+                  </pre>
+                </div>
+              )}
+
+              {downloading ? (
+                <div>
+                  <div className="flex items-center justify-between text-xs text-text-secondary mb-1.5">
+                    <span className="flex items-center gap-1.5">
+                      <Download className="w-3.5 h-3.5 animate-pulse" />
+                      {t.settings.downloadingUpdate}
+                    </span>
+                    <span className="font-mono">
+                      {progress && progress.total > 0
+                        ? `${Math.round((progress.received / progress.total) * 100)}% · ${(progress.received / 1048576).toFixed(1)} / ${(progress.total / 1048576).toFixed(1)} MB`
+                        : `${((progress?.received ?? 0) / 1048576).toFixed(1)} MB`}
+                    </span>
+                  </div>
+                  <div className="w-full h-2 bg-surface/10 rounded-full overflow-hidden">
+                    <div
+                      className="h-full brand-gradient-bg rounded-full transition-all duration-300"
+                      style={{ width: progress && progress.total > 0 ? `${Math.min(100, (progress.received / progress.total) * 100)}%` : '100%' }}
+                    />
+                  </div>
+                </div>
+              ) : installerPath ? (
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-green-400 flex items-center gap-2">
+                    <Check className="w-4 h-4" />
+                    {t.settings.updateDownloaded}
+                  </span>
+                  <button
+                    onClick={handleInstallUpdate}
+                    disabled={installing}
+                    className="btn btn-primary flex items-center gap-2 !py-1.5 !px-4 !text-xs"
+                  >
+                    {installing && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                    {t.settings.installNow}
+                  </button>
+                </div>
+              ) : updateInfo.asset ? (
+                <button
+                  onClick={handleDownloadUpdate}
+                  className="btn btn-primary flex items-center gap-2 !py-1.5 !px-4 !text-xs"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  {t.settings.downloadAndInstall}
+                </button>
+              ) : (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-text-tertiary">{t.settings.updateNoInstaller}</span>
+                  <button
+                    onClick={handleOpenReleasePage}
+                    className="btn btn-secondary flex items-center gap-1.5 !py-1.5 !px-3 !text-xs"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    {t.settings.viewReleasePage}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="mt-6 p-4 rounded-xl bg-indigo-500/10 border border-indigo-500/20">
             <p className="text-sm text-text-secondary">

@@ -7,8 +7,10 @@ const { Data, Resource } = ResEdit;
 const EXE_PATH = path.join(__dirname, '..', 'release', 'win-unpacked', 'Trae Account Manager.exe');
 const ICON_PATH = path.join(__dirname, '..', 'resources', 'icon.ico');
 
-// Version info
-const [VER_MAJOR, VER_MINOR, VER_PATCH, VER_BUILD] = '1.0.0.0'.split('.').map(n => parseInt(n, 10) || 0);
+// Version info (read from package.json so EXE metadata stays in sync)
+const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
+const [VER_MAJOR, VER_MINOR, VER_PATCH] = packageJson.version.split('.').map(n => parseInt(n, 10) || 0);
+const VER_BUILD = 0;
 const PRODUCT_NAME = 'Trae Account Manager';
 const DESCRIPTION = 'Traework Multi-Account Manager';
 const COPYRIGHT = 'Copyright © 2026 Trae Account Manager';

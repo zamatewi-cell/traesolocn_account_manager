@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { Users, CheckCircle, BarChart3, Settings, RefreshCw, Sun, Moon, Plus } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useLanguage } from '../../contexts/LanguageContext';
@@ -17,6 +18,15 @@ interface SidebarProps {
 export function Sidebar({ currentPage, onNavigate, accountCount, onRefreshAll, refreshing, onAddAccount }: SidebarProps) {
   const { t } = useLanguage();
   const { theme, toggleTheme } = useTheme();
+  const [appVersion, setAppVersion] = useState('');
+
+  useEffect(() => {
+    window.electronAPI.app.getVersion().then(result => {
+      if (result.success && result.data?.version) {
+        setAppVersion(`v${result.data.version}`);
+      }
+    });
+  }, []);
 
   const NAV_ITEMS = [
     { id: 'accounts' as const, icon: Users, label: t.nav.accounts },
@@ -104,7 +114,7 @@ export function Sidebar({ currentPage, onNavigate, accountCount, onRefreshAll, r
 
         {/* Version info */}
         <div className="text-center pt-2">
-          <p className="text-[10px] text-text-muted/50">{t.app.version}</p>
+          <p className="text-[10px] text-text-muted/50">{appVersion}</p>
         </div>
       </div>
     </div>
