@@ -368,10 +368,14 @@ export class AccountService {
         continue;
       }
 
-      // Find matching DB account by userId (preferred) or email
+      // Find matching DB account by userId (preferred) or email. The row's
+      // userId must also agree with the local session: writing account X's
+      // live credentials into account Y's row is how identity corruption
+      // starts (row Y then displays and switches as account X).
       const match = dbAccounts.find(
-        a => (local.userId && a.userId === local.userId) ||
-             (local.email && a.email && a.email.toLowerCase() === local.email.toLowerCase())
+        a => ((local.userId && a.userId === local.userId) ||
+             (local.email && a.email && a.email.toLowerCase() === local.email.toLowerCase())) &&
+            (!a.userId || !local.userId || a.userId === local.userId)
       );
 
       if (match) {
@@ -419,7 +423,87 @@ export class AccountService {
       }
     }
 
-    return recovered;
+    // ---- Repair pass for rows corrupted by older builds ----
+    // An older build could store another account's refresh token in a row
+    // (e.g. captured from the wrong OAuth channel). On the next refresh the
+    // exchange then minted the OTHER user's token, and that user's profile,
+    // credits and checkin state overwrote this row. Detect and fix:
+    //   - token foreign + blob foreign  -> row is unrecoverable, retire it
+    //   - token foreign + blob intact   -> restore credentials from blob
+    for (const dbAccount of dbAccounts) {
+      // Re-read the row: the loop above may have just replaced its token with
+      // the live local one, so the in-memory snapshot could still hold the
+      // pre-recovery (foreign) token and wrongly retire a repaired row.
+      const row = this.getAccountById(dbAccount.id);
+      if (!row) continue;
+      const rowUserId = row.userId || null;
+      if (!rowUserId) continue;
+      const blob = this.getAccountAuthBlob(row.id);
+      const tokenUserId = this.parseJwtIdentity(row.token);
+      const blobForeign = !!(blob?.userId && blob.userId !== rowUserId);
+      const tokenForeign = !!(tokenUserId && tokenUserId !== rowUserId);
+
+      if (blobForeign && tokenForeign) {
+        db.prepare("UPDATE accounts SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?")
+          .run(dbAccount.id);
+        logger.warn(
+          `[Recover] Retired account row ${dbAccount.id} (${dbAccount.nickname}): its stored credentials all belong to user ${tokenUserId}. Re-add the account to restore it.`
+        );
+        continue;
+      }
+
+      if (!blobForeign && tokenForeign && blob?.token) {
+        const encryptedToken = this.crypto.encryptString(blob.token);
+        const encryptedBlob = this.crypto.encryptString(JSON.stringify(blob));
+        db.prepare(`UPDATE accounts
+          SET token_encrypted = ?, refresh_token = COALESCE(?, refresh_token),
+              token_expired_at = COALESCE(?, token_expired_at), auth_blob_encrypted = ?,
+              updated_at = datetime('now')
+          WHERE id = ?`)
+          .run(encryptedToken, blob.refreshToken || null, blob.expiredAt || null, encryptedBlob, row.id);
+        logger.warn(
+          `[Recover] Restored credentials for account ${row.id} from its auth blob (stored token belonged to user ${tokenUserId})`
+        );
+      }
+
+      // Token is this user's but the stored blob belongs to someone else
+      // (left behind by an older build): drop it so switches never see it.
+      if (!tokenForeign && blobForeign) {
+        db.prepare("UPDATE accounts SET auth_blob_encrypted = NULL, updated_at = datetime('now') WHERE id = ?")
+          .run(row.id);
+        logger.warn(
+          `[Recover] Dropped foreign auth blob for account ${row.id} (blob user ${blob!.userId}, row user ${rowUserId})`
+        );
+      }
+    }
+
+    // ---- Duplicate user_id pass ----
+    // The worst corruption shape overwrites a row's user_id as well, so the
+    // row and its (foreign) credentials all agree on the wrong identity and
+    // the checks above cannot see it. What remains visible is two rows
+    // sharing one user_id: keep the active row (the real owner's), retire
+    // the duplicate so the UI no longer shows mirrored accounts.
+    const survivors = this.getAllAccounts();
+    const byUserId = new Map<string, typeof survivors>();
+    for (const a of survivors) {
+      if (!a.userId) continue;
+      const list = byUserId.get(a.userId) || [];
+      list.push(a);
+      byUserId.set(a.userId, list);
+    }
+    for (const [uid, list] of byUserId) {
+      if (list.length < 2) continue;
+      list.sort((x, y) => (y.isActive ? 1 : 0) - (x.isActive ? 1 : 0) || x.createdAt.localeCompare(y.createdAt));
+      for (const dup of list.slice(1)) {
+        db.prepare("UPDATE accounts SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?")
+          .run(dup.id);
+        logger.warn(
+          `[Recover] Retired duplicate row ${dup.id} (${dup.nickname}): user ${uid} is already represented by account ${list[0].id}`
+        );
+      }
+    }
+
+    return recovered.filter(a => this.getAccountById(a.id));
   }
 
   /**
@@ -552,11 +636,23 @@ export class AccountService {
     if (account.source === 'local_import' || account.installName) {
       try {
         const localAccounts = this.traework.detectLocalAccounts();
+        // Match by userId ONLY when the row has one. Falling back to
+        // installName would grab whatever account is currently logged into
+        // that installation - which may be a DIFFERENT user's session
+        // (exactly how a foreign token once overwrote another account).
         const local = localAccounts.find(a =>
-          (account.userId && a.userId === account.userId) ||
-          (account.installName && a.installName === account.installName)
+          account.userId
+            ? a.userId === account.userId
+            : (account.installName && a.installName === account.installName)
         );
         if (local && local.token && this.crypto.isValidToken(local.token)) {
+          // Identity guard: never use a live token that provably belongs to
+          // another user (e.g. this install is logged into someone else).
+          if (this.tokenIdentityMismatch(local.token, account.userId)) {
+            logger.error(
+              `Live local token belongs to user ${this.parseJwtIdentity(local.token)}, not account ${account.id} (${account.userId}); ignoring it`
+            );
+          } else {
           const localExpired = this.isTokenExpired(local.expiredAt || account.tokenExpiredAt);
 
           // Live token is still valid: use it directly
@@ -581,6 +677,7 @@ export class AccountService {
           }
           // Refresh failed: return the (expired) live token so the API call fails gracefully
           return { token: local.token, refreshToken: local.refreshToken || account.refreshToken };
+          }
         }
       } catch (err) {
         logger.warn(`Failed to read live token for account ${account.id}:`, (err as Error).message);
@@ -598,10 +695,20 @@ export class AccountService {
       try {
         const refreshed = await this.api.refreshToken(refreshToken, account.host || 'https://api.trae.cn', token);
         if (refreshed) {
+          // Identity guard: if the exchange minted a token for a DIFFERENT
+          // user (the stored refresh token belonged to another account's
+          // session), never adopt or persist it - using it would overwrite
+          // this row with the other account's identity and credits.
+          if (this.tokenIdentityMismatch(refreshed.token, account.userId)) {
+            logger.error(
+              `Token refresh for account ${account.id} minted a token for user ${this.parseJwtIdentity(refreshed.token)} (row: ${account.userId}); discarding foreign token`
+            );
+          } else {
           token = refreshed.token;
           refreshToken = refreshed.refreshToken;
           this.persistToken(account.id, token, refreshToken, refreshed.tokenExpiredAt);
           logger.info(`Token refreshed for account ${account.id}`);
+          }
         }
       } catch (err) {
         logger.warn(`Failed to refresh token for account ${account.id}:`, (err as Error).message);
@@ -626,6 +733,16 @@ export class AccountService {
     // Refresh the access token if it has expired
     const { token } = await this.ensureValidToken(account);
 
+    // Identity guard: if the usable token provably belongs to another user,
+    // every API response below (profile, credits, checkin state) would be
+    // that other user's data. Applying it would overwrite this row's
+    // identity - refuse instead so the account stays intact.
+    if (this.tokenIdentityMismatch(token, account.userId)) {
+      const msg = `Account ${id}: token belongs to user ${this.parseJwtIdentity(token)} (row: ${account.userId}); skipping refresh`;
+      logger.error(msg);
+      throw new Error('该账号的凭据与身份不匹配，已跳过刷新以保护数据（请重新导入该账号）');
+    }
+
     try {
       const deviceId = this.getDeviceId();
       // Fetch user info, entitlements, pay status, and checkin status in parallel
@@ -648,7 +765,9 @@ export class AccountService {
         updates.pay_expire_at = new Date(payStatus.expireAt).toISOString();
       }
 
-      // Update user info from API if we got it
+      // Update user info from API if we got it. The JWT guard above already
+      // rejected foreign tokens, but keep a belt-and-braces check here: a
+      // row's user_id must never silently change once set.
       if (userInfo) {
         if (userInfo.nickname) {
           updates.nickname = userInfo.nickname;
@@ -656,7 +775,7 @@ export class AccountService {
         if (userInfo.email) {
           updates.email = userInfo.email;
         }
-        if (userInfo.userId) {
+        if (userInfo.userId && (!account.userId || userInfo.userId === account.userId)) {
           updates.user_id = userInfo.userId;
         }
         if (userInfo.avatarUrl) {
@@ -830,6 +949,34 @@ export class AccountService {
   }
 
   /**
+   * Extract the user identity from a Trae JWT access token.
+   * Trae JWTs carry payload.data.id (the numeric user id string).
+   * Returns null when the token is not a parseable JWT or has no id claim.
+   */
+  private parseJwtIdentity(token: string | null | undefined): string | null {
+    if (!token) return null;
+    try {
+      const payload = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64').toString('utf-8'));
+      const id = payload?.data?.id ?? payload?.user_id ?? payload?.sub ?? null;
+      return typeof id === 'string' && id ? id : (typeof id === 'number' ? String(id) : null);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * True when the token provably belongs to a different user than the account
+   * row. Returns false when identity is unknown (non-JWT token) or matches.
+   * This is the core guard that prevents one account's credentials from
+   * overwriting another account's row (identity, credits, checkin state).
+   */
+  private tokenIdentityMismatch(token: string | null | undefined, userId: string | null | undefined): boolean {
+    if (!userId) return false;
+    const tokenUserId = this.parseJwtIdentity(token);
+    return !!tokenUserId && tokenUserId !== userId;
+  }
+
+  /**
    * Build the complete TraeAuthData to write into storage.json when switching.
    *
    * Trae validates structural fields (userRegion, account.scope, loginScope,
@@ -851,8 +998,18 @@ export class AccountService {
   ): TraeAuthData {
     let base = this.getAccountAuthBlob(account.id);
     if (base) {
-      logger.info(`Switch: using stored auth blob for account ${account.id}`);
-    } else {
+      // The blob must belong to this account. A foreign blob (e.g. written
+      // by an older build during corrupted-token switches) would smuggle
+      // another user's session into storage.json - use the local template
+      // instead so only this account's personal data is written.
+      if (base.userId && account.userId && base.userId !== account.userId) {
+        logger.warn(`Switch: stored blob for account ${account.id} belongs to user ${base.userId}; ignoring it`);
+        base = this.traework.getRealAuthBlob() || null;
+      } else {
+        logger.info(`Switch: using stored auth blob for account ${account.id}`);
+      }
+    }
+    if (!base) {
       base = this.traework.getRealAuthBlob();
       if (base) {
         logger.info(`Switch: using local storage blob as template for account ${account.id}`);
@@ -937,6 +1094,13 @@ export class AccountService {
 
     // Use a valid (live) token for switching
     const { token, refreshToken } = await this.ensureValidToken(account);
+
+    // Identity guard: writing a foreign token into storage.json would log
+    // Trae into the WRONG account (the switch looks like a no-op).
+    if (this.tokenIdentityMismatch(token, account.userId)) {
+      logger.error(`Switch refused for account ${id}: token belongs to user ${this.parseJwtIdentity(token)} (row: ${account.userId})`);
+      throw new Error('该账号的凭据与身份不匹配，无法切换（请删除后重新导入该账号）');
+    }
 
     // Build the complete auth blob for switching. Trae validates fields like
     // userRegion / scope / loginScope when reading storage.json; a hand-built
@@ -1088,6 +1252,19 @@ export class AccountService {
 
     // Ensure we have a valid (non-expired) token
     const { token } = await this.ensureValidToken(account);
+
+    // Identity guard: never claim a checkin with a token that belongs to
+    // another user - it would consume the OTHER account's daily checkin
+    // and then overwrite this row with that account's data on refresh.
+    if (this.tokenIdentityMismatch(token, account.userId)) {
+      logger.error(`Checkin refused for account ${id}: token belongs to user ${this.parseJwtIdentity(token)} (row: ${account.userId})`);
+      return {
+        success: false,
+        creditsEarned: 0,
+        message: '该账号的凭据与身份不匹配，签到已跳过（请删除后重新导入该账号）',
+        alreadyCheckedIn: false,
+      };
+    }
 
     // First check current checkin status
     const status = await this.api.getCheckinStatus(token, host, deviceId);
