@@ -22,6 +22,17 @@ const COMMON_TRAE_EXE_PATHS = [
   (p: string) => path.join(p, 'Programs', 'TRAE SOLO CN', 'TRAE SOLO CN.exe'),
 ];
 
+// Executable preference order, mirroring COMMON_TRAE_EXE_PATHS. A machine can
+// run several Trae products at once, and they are NOT interchangeable:
+//   "TRAE SOLO CN.exe" = TraeWork CN product (directory keeps the old
+//                        TraeSolo CN name after the product rename) - this is
+//                        the product this account manager is built for;
+//   "Trae CN.exe"      = TraeCode CN (the classic IDE);
+//   "Trae.exe"         = international Trae.
+// Detection must return the preferred product, not whichever process the
+// CIM query happens to list first.
+const TRAE_EXE_BASENAME_PRIORITY = ['trae solo cn.exe', 'trae cn.exe', 'trae.exe'];
+
 export class TraeworkService {
   private crypto = getCryptoService();
 
@@ -35,6 +46,24 @@ export class TraeworkService {
     const lower = p.toLowerCase();
     if (process.execPath && lower === process.execPath.toLowerCase()) return true;
     return path.basename(lower) === 'trae account manager.exe';
+  }
+
+  /**
+   * Pick the preferred Trae executable among detected candidates.
+   * When several Trae products run at once (e.g. TraeWork CN alongside
+   * TraeCode CN), prefer the one this manager is built for instead of an
+   * arbitrary first CIM result.
+   */
+  private pickPreferredTraeExe(paths: string[]): string {
+    const byBasename = new Map<string, string>();
+    for (const p of paths) {
+      byBasename.set(path.basename(p).toLowerCase(), p);
+    }
+    for (const preferred of TRAE_EXE_BASENAME_PRIORITY) {
+      const hit = byBasename.get(preferred);
+      if (hit) return hit;
+    }
+    return paths[0];
   }
 
   /**
@@ -109,12 +138,18 @@ export class TraeworkService {
    * Returns null if not found.
    */
   async findTraeExePath(): Promise<string | null> {
-    // 1. Try to get the path from a running Trae process
+    // 1. Try to get the path from a running Trae process. Multiple Trae
+    //    products may run at once (TraeWork CN + TraeCode CN); pick the
+    //    preferred product instead of the first CIM result.
     const runningPaths = await this.getRunningTraeExePaths();
     if (runningPaths.length > 0) {
-      logger.info(`Detected Trae exe from running process: ${runningPaths[0]}`);
-      store.set('lastKnownTraeExe', runningPaths[0]);
-      return runningPaths[0];
+      const preferred = this.pickPreferredTraeExe(runningPaths);
+      logger.info(
+        `Detected Trae exe from running process: ${preferred}` +
+          (runningPaths.length > 1 ? ` (candidates: ${runningPaths.join(', ')})` : '')
+      );
+      store.set('lastKnownTraeExe', preferred);
+      return preferred;
     }
 
     // 2. Last known path captured from a previous run. Reject stale values
