@@ -507,20 +507,92 @@ export class AccountService {
   }
 
   /**
+   * Harvest fresh credentials the local Trae client wrote into storage.json.
+   * While Trae runs it refreshes its own token (access tokens live ~minutes,
+   * the client silently renews them), so storage.json can hold a live token
+   * + refresh token that this app's DB knows nothing about - exactly what
+   * happens when an OAuth-imported row stored a dead web token. Rows whose
+   * DB token is expired/older adopt the live credentials; rows without a
+   * stored auth blob get the complete live blob so future switches are
+   * structurally valid for Trae.
+   */
+  harvestLiveCredentials(): void {
+    let locals: LocalAccountInfo[];
+    try {
+      locals = this.traework.detectLocalAccounts();
+    } catch (err) {
+      logger.warn('[Harvest] Failed to read local Trae storages:', (err as Error).message);
+      return;
+    }
+
+    for (const local of locals) {
+      if (!local.userId || !local.token || !this.crypto.isValidToken(local.token)) continue;
+      const row = this.findAccountByUserId(local.userId);
+      if (!row) continue;
+
+      // Identity guard: the live token must provably belong to this row.
+      if (this.tokenIdentityMismatch(local.token, row.userId)) {
+        logger.warn(`[Harvest] Live token for user ${local.userId} does not match row ${row.id}; skipping`);
+        continue;
+      }
+
+      const rowExpired = this.isTokenExpired(row.tokenExpiredAt);
+      const localExpired = this.isTokenExpired(local.expiredAt);
+      const rowBlob = this.getAccountAuthBlob(row.id);
+
+      if (rowExpired && !localExpired) {
+        this.persistToken(row.id, local.token, local.refreshToken || row.refreshToken, local.expiredAt || row.tokenExpiredAt);
+        if (local.authBlob) this.saveAccountAuthBlob(row.id, local.authBlob);
+        logger.info(`[Harvest] Adopted live credentials from local Trae for account ${row.id} (${row.nickname})`);
+      } else if (!rowBlob && local.authBlob && !localExpired) {
+        this.saveAccountAuthBlob(row.id, local.authBlob);
+        if (!row.refreshToken && local.refreshToken) {
+          this.persistToken(row.id, row.token, local.refreshToken, local.expiredAt || row.tokenExpiredAt);
+        }
+        logger.info(`[Harvest] Saved live auth blob for account ${row.id} (${row.nickname})`);
+      }
+    }
+  }
+
+  /**
    * Add account from OAuth flow token.
    * After OAuth login the account is the one logged into local Trae, so the
    * real blob in storage.json belongs to it - capture it for future switches.
+   * The blob is matched by IDENTITY (blob user vs token user), not by token
+   * equality: the OAuth web session and the local Trae client mint DIFFERENT
+   * tokens for the same account, and the web token is short-lived - requiring
+   * equality stored a dead token and dropped the client's complete blob.
    */
   async addAccountFromOAuth(token: string, host?: string, refreshToken?: string, expiredAt?: string): Promise<Account> {
     const realBlob = this.traework.getRealAuthBlob();
-    const authBlob = realBlob && realBlob.token === token ? realBlob : undefined;
-    if (realBlob && !authBlob) {
-      logger.warn('OAuth: local storage blob belongs to a different account, skipping capture');
+    let authBlob: TraeAuthData | undefined;
+    let useToken = token;
+    let useRefreshToken = refreshToken || undefined;
+    let useExpiredAt = expiredAt;
+
+    if (realBlob && realBlob.token) {
+      const blobUserId = realBlob.userId || this.parseJwtIdentity(realBlob.token);
+      const tokenUserId = this.parseJwtIdentity(token);
+      if (blobUserId && tokenUserId && blobUserId === tokenUserId) {
+        authBlob = realBlob;
+        if (!this.isTokenExpired(realBlob.expiredAt)) {
+          // The client's own token outlives the short-lived web token.
+          useToken = realBlob.token;
+          useRefreshToken = realBlob.refreshToken || refreshToken || undefined;
+          useExpiredAt = realBlob.expiredAt || expiredAt;
+          logger.info('OAuth: adopting the local client token/blob for the same account');
+        } else {
+          logger.info('OAuth: adopting the local client blob for the same account (client token expired, keeping web token)');
+        }
+      } else {
+        logger.warn('OAuth: local storage blob belongs to a different account, skipping capture');
+      }
     }
-    return this.addAccount(token, 'oauth', {
+
+    return this.addAccount(useToken, 'oauth', {
       host: host || 'https://api.trae.cn',
-      refreshToken,
-      tokenExpiredAt: expiredAt,
+      refreshToken: useRefreshToken,
+      tokenExpiredAt: useExpiredAt,
     }, authBlob);
   }
 
@@ -632,8 +704,13 @@ export class AccountService {
    * 2. Otherwise use the DB token, refreshing it via the refresh token when expired.
    */
   private async ensureValidToken(account: Account): Promise<{ token: string; refreshToken: string | null }> {
-    // 1. Prefer the live token from local Trae storage for local accounts
-    if (account.source === 'local_import' || account.installName) {
+    // 1. Prefer the live token from local Trae storage. storage.json is the
+    //    source of truth - Trae keeps it refreshed while running - so ANY
+    //    account matching by userId benefits, not just local_import rows.
+    //    OAuth-imported accounts previously fell through to their (often
+    //    short-lived, already expired) web token and switched Trae into the
+    //    logged-out state.
+    if (account.userId || account.source === 'local_import' || account.installName) {
       try {
         const localAccounts = this.traework.detectLocalAccounts();
         // Match by userId ONLY when the row has one. Falling back to

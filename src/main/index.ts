@@ -53,6 +53,14 @@ if (!gotTheLock) {
     // with a different encryption format, and refreshes expired tokens)
     getAccountService().recoverAccountsFromLocal().then(async (accounts) => {
       logger.info(`Account recovery finished. ${accounts.length} account(s) available.`);
+      // Harvest credentials the local Trae client refreshed on its own while it
+      // ran: rows holding a dead OAuth web token adopt the live client token +
+      // refresh token, so switches never write expired credentials again.
+      try {
+        getAccountService().harvestLiveCredentials();
+      } catch (err) {
+        logger.warn('Credential harvest failed:', (err as Error).message);
+      }
       // Auto-refresh all accounts so avatar / credits / checkin data is fresh on open
       try {
         await getAccountService().refreshAllAccounts();
