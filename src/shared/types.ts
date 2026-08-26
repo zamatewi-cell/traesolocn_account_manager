@@ -307,6 +307,7 @@ export interface UsageRecordResponse {
 // IPC channel names
 export const IPC_CHANNELS = {
   ACCOUNT_LIST: 'account:list',
+  ACCOUNTS_UPDATED: 'accounts:updated',
   ACCOUNT_ADD_OAUTH: 'account:add:oauth',
   ACCOUNT_ADD_TOKEN: 'account:add:token',
   ACCOUNT_ADD_LOCAL: 'account:add:local',

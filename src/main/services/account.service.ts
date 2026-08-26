@@ -6,6 +6,8 @@ import { store } from '../utils/store';
 import { logger } from '../utils/logger';
 import { findExistingTraeStorage } from '../utils/paths';
 import { createHash } from 'crypto';
+import { BrowserWindow } from 'electron';
+import { IPC_CHANNELS } from '../../shared/types';
 import fs from 'fs';
 import type { Account, ExportAccount, ExportAccountEntry, CreditsInfo, LocalAccountInfo, TraeAuthData, EntitlementPack, UserInfo, UsageRecord } from '../../shared/types';
 
@@ -1448,7 +1450,45 @@ export class AccountService {
       }
     }
 
+    // Trae exchanges the refresh token on startup and writes the freshly
+    // minted credentials back to storage.json ~1 min after launch. The token
+    // we just wrote is then invalidated server-side, so the DB row must adopt
+    // the new one - otherwise every API call (credits / usage / check-in)
+    // fails with 401 until the next manual refresh, even though the switch
+    // itself succeeded. Retry at 75s and again at 180s; both passes are
+    // idempotent (harvest only adopts newer credentials, refresh just rewrites).
+    if (traeRestarted) {
+      for (const delayMs of [75_000, 180_000]) {
+        const t = setTimeout(() => {
+          void this.postSwitchCredentialSync(id).catch(err => {
+            logger.warn(`[PostSwitch] Credential sync for account ${id} failed:`, (err as Error).message);
+          });
+        }, delayMs);
+        t.unref?.();
+      }
+    }
+
     return { ...this.getAccountById(id)!, traeRestarted, traeExeLaunched };
+  }
+
+  /**
+   * Adopt the credentials Trae minted after a switch and reload the account's
+   * data (credits, usage, check-in status), then push the update to the UI.
+   */
+  private async postSwitchCredentialSync(id: number): Promise<void> {
+    this.harvestLiveCredentials();
+    if (!this.getAccountById(id)) return;
+
+    await this.refreshAccount(id);
+
+    for (const win of BrowserWindow.getAllWindows()) {
+      try {
+        win.webContents.send(IPC_CHANNELS.ACCOUNTS_UPDATED, { accountId: id });
+      } catch {
+        // Window may be closing
+      }
+    }
+    logger.info(`[PostSwitch] Credential sync finished for account ${id}`);
   }
 
   /**

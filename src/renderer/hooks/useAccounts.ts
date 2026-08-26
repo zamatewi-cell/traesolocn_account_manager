@@ -297,6 +297,22 @@ function useAccountsState() {
     loadAccounts();
   }, [loadAccounts]);
 
+  // Silent reload when the main process pushed an update (e.g. credentials
+  // adopted after a switch); avoids the loading skeleton flash.
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.accounts.onAccountsUpdated(async () => {
+      try {
+        const result = await window.electronAPI.accounts.list();
+        if (result.success && result.data) {
+          setAccounts(result.data);
+        }
+      } catch {
+        // ignore - next manual refresh will recover
+      }
+    });
+    return unsubscribe;
+  }, []);
+
   return {
     accounts,
     loading,

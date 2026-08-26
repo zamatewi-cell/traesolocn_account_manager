@@ -36,6 +36,13 @@ const electronAPI = {
       ipcInvoke<Account>(IPC_CHANNELS.ACCOUNT_SWITCH, { id, ...options }),
     refresh: (id: number): Promise<IpcResponse<Account>> => ipcInvoke<Account>(IPC_CHANNELS.ACCOUNT_REFRESH, { id }),
     refreshAll: (): Promise<IpcResponse<Account[]>> => ipcInvoke<Account[]>(IPC_CHANNELS.ACCOUNT_REFRESH_ALL),
+    onAccountsUpdated: (callback: () => void): (() => void) => {
+      const listener = () => callback();
+      ipcRenderer.on(IPC_CHANNELS.ACCOUNTS_UPDATED, listener);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.ACCOUNTS_UPDATED, listener);
+      };
+    },
   },
 
   // Checkin operations
