@@ -81,6 +81,26 @@ function createSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted ON accounts(deleted_at);
   `);
 
+  // Auto check-in execution history (30-day rolling retention)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS auto_checkin_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trigger_type TEXT NOT NULL DEFAULT 'auto',
+      run_at TEXT NOT NULL,
+      duration_ms INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      already_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      total INTEGER NOT NULL DEFAULT 0,
+      results_json TEXT
+    )
+  `);
+
+  // Purge records older than 30 days
+  db.prepare(
+    "DELETE FROM auto_checkin_records WHERE run_at < datetime('now', 'localtime', '-30 days')"
+  ).run();
+
   logger.info('Database schema ready');
 }
 

@@ -68,8 +68,10 @@ export function StatsPage() {
         })}
       </div>
 
-      {/* Account breakdown */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {/* Account breakdown - scrolls independently; the page shell is
+          overflow-hidden, so without this wrapper long content gets clipped */}
+      <div className="flex-1 overflow-y-auto pr-2 -mr-2">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Credits by account */}
         <div className="card">
           <h3 className="text-lg font-semibold text-text-primary mb-4">{t.stats.creditsByAccount}</h3>
@@ -127,6 +129,7 @@ export function StatsPage() {
               })}
             </div>
           )}
+        </div>
         </div>
       </div>
     </div>

@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { CheckCircle2, RefreshCw, LogIn, Trash2, Coins, MoreVertical, Check, XCircle, Clock, Zap, BarChart3, ReceiptText, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn, formatNumber, formatDate, getPayStatusType, getPayStatusColor, getPayStatusBadgeClass, getPayStatusLabel, getQuotaDisplay, formatExpiration, getEntitlementTypeLabel } from '../../lib/utils';
 import { AccountAvatar } from './AccountAvatar';
@@ -42,6 +43,9 @@ function getRangeStart(range: UsageRange): number {
 export function AccountCard({ account, isCheckingIn, isSwitching, onCheckin, onRefresh, onSwitch, onDelete }: AccountCardProps) {
   const { t } = useLanguage();
   const [showMenu, setShowMenu] = useState(false);
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [usageRecords, setUsageRecords] = useState<UsageRecord[]>([]);
@@ -113,6 +117,58 @@ export function AccountCard({ account, isCheckingIn, isSwitching, onCheckin, onR
   const formattedDate = formatDate(account.lastCheckinAt);
   const lastRefreshed = formatDate(account.lastRefreshedAt);
   const totalPages = Math.max(1, Math.ceil(usageTotal / USAGE_PAGE_SIZE));
+
+  // The dropdown renders via portal at document.body with position:fixed, so
+  // it escapes card stacking contexts and the list's overflow clipping. It
+  // opens downward below the trigger and flips up ONLY when the measured
+  // height would not fit before the window bottom.
+  useLayoutEffect(() => {
+    if (!showMenu) return;
+    const trigger = menuTriggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+
+    // Item row = py-2 (16) + line height (20) = 36px; container py-1 = 8px;
+    // separator = my-1 + 1px border = 9px.
+    const itemCount = 2 + (!account.isActive && !isSwitching ? 1 : 0);
+    const menuHeight = 8 + itemCount * 36 + 9;
+    const MENU_WIDTH = 192; // w-48
+    const GAP = 6;
+
+    let top = rect.bottom + GAP;
+    if (top + menuHeight + 8 > window.innerHeight) {
+      top = Math.max(8, rect.top - menuHeight - GAP);
+    }
+    const left = Math.max(8, Math.min(rect.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8));
+    setMenuPos({ top, left });
+  }, [showMenu, account.isActive, isSwitching]);
+
+  // Close on outside press (also enforces single-open across cards: pressing
+  // another card's ⋮ closes this menu before that one opens), on any scroll
+  // (fixed menu must not detach from its trigger), on resize, and on Escape.
+  useEffect(() => {
+    if (!showMenu) return;
+    const onPointerDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (menuRef.current?.contains(target)) return;
+      if (menuTriggerRef.current?.contains(target)) return;
+      setShowMenu(false);
+    };
+    const onClose = () => setShowMenu(false);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowMenu(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('scroll', onClose, true);
+    window.addEventListener('resize', onClose);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('scroll', onClose, true);
+      window.removeEventListener('resize', onClose);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [showMenu]);
 
   const RANGE_TABS: Array<{ id: UsageRange; label: string }> = [
     { id: 'today', label: t.accounts.usageToday },
@@ -263,48 +319,14 @@ export function AccountCard({ account, isCheckingIn, isSwitching, onCheckin, onR
           )}
 
           {/* Menu button */}
-          <div className="relative">
+          <div>
             <button
+              ref={menuTriggerRef}
               onClick={() => setShowMenu(!showMenu)}
               className="btn btn-ghost p-2"
             >
               <MoreVertical className="w-4 h-4" />
             </button>
-
-            {showMenu && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
-                <div className="absolute right-0 top-full mt-1 w-48 glass rounded-lg shadow-xl z-20 py-1 animate-fade-in">
-                  <button
-                    onClick={() => { setShowMenu(false); onRefresh(); }}
-                    className="w-full px-3 py-2 text-left text-sm text-text-secondary hover:text-text-primary hover:bg-surface/10 flex items-center gap-2"
-                  >
-                    <RefreshCw className="w-4 h-4" />
-                    {t.accounts.refreshData}
-                  </button>
-
-                  {!account.isActive && !isSwitching && (
-                    <button
-                      onClick={() => { setShowMenu(false); onSwitch(); }}
-                      className="w-full px-3 py-2 text-left text-sm text-text-secondary hover:text-text-primary hover:bg-surface/10 flex items-center gap-2"
-                    >
-                      <LogIn className="w-4 h-4" />
-                      {t.accounts.switchToThis}
-                    </button>
-                  )}
-
-                  <div className="border-t border-surface/8 my-1" />
-
-                  <button
-                    onClick={handleDelete}
-                    className="w-full px-3 py-2 text-left text-sm text-red-500 hover:bg-red-500/10 flex items-center gap-2"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                    {confirmDelete ? t.accounts.clickToConfirm : t.accounts.deleteAccount}
-                  </button>
-                </div>
-              </>
-            )}
           </div>
         </div>
       </div>
@@ -515,6 +537,53 @@ export function AccountCard({ account, isCheckingIn, isSwitching, onCheckin, onR
             </p>
           )}
         </div>
+      )}
+
+      {/* Dropdown menu, portaled to document.body: escapes card stacking
+          contexts and the scroll container's overflow clipping entirely, and
+          uses an opaque elevated background so sibling cards never bleed
+          through it. */}
+      {showMenu && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed w-48 rounded-lg py-1 animate-fade-in z-50 border"
+          style={{
+            top: menuPos.top,
+            left: menuPos.left,
+            background: 'rgb(var(--bg-elevated))',
+            borderColor: 'var(--glass-border)',
+            boxShadow: '0 12px 40px rgba(0, 0, 0, 0.45)',
+          }}
+        >
+          <button
+            onClick={() => { setShowMenu(false); onRefresh(); }}
+            className="w-full px-3 py-2 text-left text-sm text-text-secondary hover:text-text-primary hover:bg-surface/10 flex items-center gap-2"
+          >
+            <RefreshCw className="w-4 h-4" />
+            {t.accounts.refreshData}
+          </button>
+
+          {!account.isActive && !isSwitching && (
+            <button
+              onClick={() => { setShowMenu(false); onSwitch(); }}
+              className="w-full px-3 py-2 text-left text-sm text-text-secondary hover:text-text-primary hover:bg-surface/10 flex items-center gap-2"
+            >
+              <LogIn className="w-4 h-4" />
+              {t.accounts.switchToThis}
+            </button>
+          )}
+
+          <div className="border-t border-surface/8 my-1" />
+
+          <button
+            onClick={handleDelete}
+            className="w-full px-3 py-2 text-left text-sm text-red-500 hover:bg-red-500/10 flex items-center gap-2"
+          >
+            <Trash2 className="w-4 h-4" />
+            {confirmDelete ? t.accounts.clickToConfirm : t.accounts.deleteAccount}
+          </button>
+        </div>,
+        document.body
       )}
     </div>
   );

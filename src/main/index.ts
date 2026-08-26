@@ -4,6 +4,7 @@ import { initDatabase, closeDatabase } from './services/database';
 import { registerAllIpcHandlers } from './ipc';
 import { ensureDirectories } from './utils/paths';
 import { getAccountService } from './services/account.service';
+import { getAutoCheckinService } from './services/auto-checkin.service';
 import { logger } from './utils/logger';
 
 // Single instance lock
@@ -49,6 +50,16 @@ if (!gotTheLock) {
       logger.error('[DIAG] Database init failed (continuing without DB):', (err as Error).message);
     }
 
+    // Clear refresh tokens cross-contaminated by older builds BEFORE recovery
+    // rewrites rows: while two rows still carry the same foreign refresh token
+    // the conflict is visible and both get cleaned; after recovery heals one
+    // row the other's copy would look legitimately owned and survive.
+    try {
+      getAccountService().repairForeignRefreshTokens();
+    } catch (err) {
+      logger.warn('Refresh-token repair failed:', (err as Error).message);
+    }
+
     // Recover accounts from local Trae storage (fixes tokens written by older builds
     // with a different encryption format, and refreshes expired tokens)
     getAccountService().recoverAccountsFromLocal().then(async (accounts) => {
@@ -74,6 +85,13 @@ if (!gotTheLock) {
 
     // Register IPC handlers
     registerAllIpcHandlers();
+
+    // Start the auto check-in scheduler (no-op when disabled)
+    try {
+      getAutoCheckinService().reschedule();
+    } catch (err) {
+      logger.warn('Auto check-in scheduler start failed:', (err as Error).message);
+    }
 
     // Create main window
     createMainWindow();

@@ -4,6 +4,7 @@ import { getAuthService } from '../services/auth.service';
 import { getTraeworkService } from '../services/traework.service';
 import { getCheckinService } from '../services/checkin.service';
 import { getUpdateService } from '../services/update.service';
+import { getAutoCheckinService } from '../services/auto-checkin.service';
 import { IPC_CHANNELS } from '../../shared/types';
 import { logger } from '../utils/logger';
 import { store } from '../utils/store';
@@ -16,6 +17,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoCloseTrae: true,
   autoRestartTrae: true,
   traeExePath: '',
+  autoCheckinEnabled: false,
+  autoCheckinStart: '06:00',
+  autoCheckinEnd: '12:00',
 };
 
 export function getAppSettings(): AppSettings {
@@ -23,6 +27,9 @@ export function getAppSettings(): AppSettings {
     autoCloseTrae: store.get('autoCloseTrae', DEFAULT_SETTINGS.autoCloseTrae) as boolean,
     autoRestartTrae: store.get('autoRestartTrae', DEFAULT_SETTINGS.autoRestartTrae) as boolean,
     traeExePath: store.get('traeExePath', DEFAULT_SETTINGS.traeExePath) as string,
+    autoCheckinEnabled: store.get('autoCheckinEnabled', DEFAULT_SETTINGS.autoCheckinEnabled) as boolean,
+    autoCheckinStart: store.get('autoCheckinStart', DEFAULT_SETTINGS.autoCheckinStart) as string,
+    autoCheckinEnd: store.get('autoCheckinEnd', DEFAULT_SETTINGS.autoCheckinEnd) as string,
   };
 }
 
@@ -282,6 +289,60 @@ export function registerAccountIpcHandlers(): void {
       if (typeof settings.traeExePath === 'string') store.set('traeExePath', settings.traeExePath);
       return { success: true, data: getAppSettings() };
     } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Auto check-in: live scheduler state
+  ipcMain.handle(IPC_CHANNELS.AUTOCHECKIN_GET_STATUS, async (): Promise<AnyResponse> => {
+    try {
+      return { success: true, data: getAutoCheckinService().getStatus() };
+    } catch (err) {
+      logger.error('Get auto-checkin status failed:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Auto check-in: update settings (enable/disable, time window) and reschedule
+  ipcMain.handle(IPC_CHANNELS.AUTOCHECKIN_SET_SETTINGS, async (_event, { enabled, start, end }: { enabled?: boolean; start?: string; end?: string }): Promise<AnyResponse> => {
+    try {
+      const service = getAutoCheckinService();
+      const settings = service.updateSettings({ enabled, start, end });
+      return { success: true, data: { settings, status: service.getStatus() } };
+    } catch (err) {
+      logger.error('Set auto-checkin settings failed:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Auto check-in: run immediately once (recorded as a manual test run)
+  ipcMain.handle(IPC_CHANNELS.AUTOCHECKIN_RUN_TEST, async (): Promise<AnyResponse> => {
+    try {
+      const record = await getAutoCheckinService().runTest();
+      return { success: true, data: record };
+    } catch (err) {
+      logger.error('Auto-checkin test run failed:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Auto check-in: execution history (30-day rolling)
+  ipcMain.handle(IPC_CHANNELS.AUTOCHECKIN_GET_RECORDS, async (): Promise<AnyResponse> => {
+    try {
+      return { success: true, data: getAutoCheckinService().getRecords() };
+    } catch (err) {
+      logger.error('Get auto-checkin records failed:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Auto check-in: wipe execution history
+  ipcMain.handle(IPC_CHANNELS.AUTOCHECKIN_CLEAR_RECORDS, async (): Promise<AnyResponse> => {
+    try {
+      getAutoCheckinService().clearRecords();
+      return { success: true };
+    } catch (err) {
+      logger.error('Clear auto-checkin records failed:', err);
       return { success: false, error: (err as Error).message };
     }
   });

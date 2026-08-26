@@ -153,6 +153,25 @@ export interface Translations {
     pathDetected: string;
     pathNotFound: string;
     pathPlaceholder: string;
+    autoCheckin: string;
+    autoCheckinEnable: string;
+    autoCheckinEnableDescription: string;
+    autoCheckinWindow: string;
+    autoCheckinWindowDescription: string;
+    autoCheckinNextRun: (time: string) => string;
+    autoCheckinRanToday: string;
+    autoCheckinNoSchedule: string;
+    autoCheckinRunTest: string;
+    autoCheckinTesting: string;
+    autoCheckinTestDone: (success: number, already: number, failed: number) => string;
+    autoCheckinRecords: (count: number) => string;
+    autoCheckinNoRecords: string;
+    autoCheckinTriggerAuto: string;
+    autoCheckinTriggerManual: string;
+    autoCheckinClearRecords: string;
+    autoCheckinRecordsCleared: string;
+    autoCheckinKeepAppRunning: string;
+    autoCheckinInvalidWindow: string;
     dataManagement: string;
     exportAccounts: string;
     exportDescription: string;
@@ -403,6 +422,25 @@ const en: Translations = {
     pathDetected: 'Path detected',
     pathNotFound: 'Not found',
     pathPlaceholder: 'e.g. D:\\TRAE SOLO CN\\TRAE SOLO CN.exe',
+    autoCheckin: 'Auto Check-in',
+    autoCheckinEnable: 'Enable auto check-in',
+    autoCheckinEnableDescription: 'Automatically check in all accounts once every day',
+    autoCheckinWindow: 'Random time window',
+    autoCheckinWindowDescription: 'Each day a random moment inside this window is picked, so requests never fire at a fixed time',
+    autoCheckinNextRun: (time) => `Next run: ${time}`,
+    autoCheckinRanToday: 'Already checked in today — next run tomorrow',
+    autoCheckinNoSchedule: 'Scheduler idle',
+    autoCheckinRunTest: 'Run once now',
+    autoCheckinTesting: 'Running...',
+    autoCheckinTestDone: (success, already, failed) => `Check-in finished: ${success} succeeded, ${already} already checked in, ${failed} failed`,
+    autoCheckinRecords: (count) => `History (${count})`,
+    autoCheckinNoRecords: 'No runs recorded yet',
+    autoCheckinTriggerAuto: 'Auto',
+    autoCheckinTriggerManual: 'Test',
+    autoCheckinClearRecords: 'Clear',
+    autoCheckinRecordsCleared: 'History cleared',
+    autoCheckinKeepAppRunning: 'The scheduled check-in only fires while this app is running (minimized is fine)',
+    autoCheckinInvalidWindow: 'Start time must be earlier than end time',
     dataManagement: 'Data Management',
     exportAccounts: 'Export Accounts',
     exportDescription: 'Export all accounts as a JSON file (includes tokens)',
@@ -650,6 +688,25 @@ const zh: Translations = {
     pathDetected: '已检测到路径',
     pathNotFound: '未找到',
     pathPlaceholder: '例如 D:\\TRAE SOLO CN\\TRAE SOLO CN.exe',
+    autoCheckin: '自动签到',
+    autoCheckinEnable: '开启自动签到',
+    autoCheckinEnableDescription: '每天自动为全部账号签到一次',
+    autoCheckinWindow: '随机时间窗',
+    autoCheckinWindowDescription: '每天在该时间段内随机挑选一个时刻执行，避免固定时间请求',
+    autoCheckinNextRun: (time) => `下次执行：${time}`,
+    autoCheckinRanToday: '今日已完成，明天再执行',
+    autoCheckinNoSchedule: '未排期',
+    autoCheckinRunTest: '立即执行一次',
+    autoCheckinTesting: '正在执行…',
+    autoCheckinTestDone: (success, already, failed) => `签到完成：成功 ${success}，已签 ${already}，失败 ${failed}`,
+    autoCheckinRecords: (count) => `签到记录（${count}）`,
+    autoCheckinNoRecords: '暂无签到记录',
+    autoCheckinTriggerAuto: '自动',
+    autoCheckinTriggerManual: '测试',
+    autoCheckinClearRecords: '清空',
+    autoCheckinRecordsCleared: '签到记录已清空',
+    autoCheckinKeepAppRunning: '定时触发需要本应用保持运行（最小化即可）',
+    autoCheckinInvalidWindow: '开始时间必须早于结束时间',
     dataManagement: '数据管理',
     exportAccounts: '导出账号',
     exportDescription: '将所有账号导出为 JSON 文件（包含令牌）',

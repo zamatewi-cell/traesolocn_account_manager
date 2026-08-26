@@ -219,12 +219,17 @@
    ============================================================ */
 @keyframes fade-in {
   from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+  /* No transform in the `to` frame: fill-mode `both` would otherwise keep a
+     computed transform: translateY(0) on the element FOREVER, and any non-none
+     transform creates a stacking context. Every account row would then trap
+     its own z-index layer (dropdowns included) and later DOM siblings would
+     paint over earlier rows' open menus. */
+  to { opacity: 1; }
 }
 
 @keyframes slide-in {
   from { opacity: 0; transform: translateX(-20px); }
-  to { opacity: 1; transform: translateX(0); }
+  to { opacity: 1; }
 }
 
 @keyframes pulse-glow {

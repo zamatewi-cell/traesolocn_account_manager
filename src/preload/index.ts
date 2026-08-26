@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC_CHANNELS } from '../shared/types';
-import type { Account, CheckinResult, BatchCheckinResult, LocalAccountInfo, IpcResponse, Language, AppSettings, UsageRecord, UpdateInfo, UpdateProgress } from '../shared/types';
+import type { Account, CheckinResult, BatchCheckinResult, LocalAccountInfo, IpcResponse, Language, AppSettings, UsageRecord, UpdateInfo, UpdateProgress, AutoCheckinStatus, AutoCheckinRecord } from '../shared/types';
 
 // Wrapper function for IPC calls with proper typing
 async function ipcInvoke<T = unknown>(channel: string, ...args: unknown[]): Promise<IpcResponse<T>> {
@@ -60,6 +60,27 @@ const electronAPI = {
       ipcInvoke<LocalAccountInfo[]>(IPC_CHANNELS.STORAGE_DETECT_ALL_LOCAL),
     isTraeworkRunning: (): Promise<IpcResponse<{ running: boolean }>> => 
       ipcInvoke<{ running: boolean }>(IPC_CHANNELS.APP_CHECK_TRAEWORK_RUNNING),
+  },
+
+  // Auto check-in
+  autoCheckin: {
+    getStatus: (): Promise<IpcResponse<AutoCheckinStatus>> =>
+      ipcInvoke<AutoCheckinStatus>(IPC_CHANNELS.AUTOCHECKIN_GET_STATUS),
+    setSettings: (settings: { enabled?: boolean; start?: string; end?: string }): Promise<IpcResponse<{ settings: { enabled: boolean; start: string; end: string }; status: AutoCheckinStatus }>> =>
+      ipcInvoke<{ settings: { enabled: boolean; start: string; end: string }; status: AutoCheckinStatus }>(IPC_CHANNELS.AUTOCHECKIN_SET_SETTINGS, settings),
+    runTest: (): Promise<IpcResponse<AutoCheckinRecord>> =>
+      ipcInvoke<AutoCheckinRecord>(IPC_CHANNELS.AUTOCHECKIN_RUN_TEST),
+    getRecords: (): Promise<IpcResponse<AutoCheckinRecord[]>> =>
+      ipcInvoke<AutoCheckinRecord[]>(IPC_CHANNELS.AUTOCHECKIN_GET_RECORDS),
+    clearRecords: (): Promise<IpcResponse> =>
+      ipcInvoke(IPC_CHANNELS.AUTOCHECKIN_CLEAR_RECORDS),
+    onCompleted: (callback: (record: AutoCheckinRecord) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, record: AutoCheckinRecord) => callback(record);
+      ipcRenderer.on(IPC_CHANNELS.AUTOCHECKIN_COMPLETED, listener);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.AUTOCHECKIN_COMPLETED, listener);
+      };
+    },
   },
 
   // App settings
