@@ -138,15 +138,47 @@ export interface LocalAccountInfo {
   authBlob?: TraeAuthData;
 }
 
+// One account entry in a v2 export file (snake_case, aligned with the
+// Cockpit-style reference format so exported files carry full credentials)
+export interface ExportAccountEntry {
+  /** Stable id: "trae_" + md5(userId) */
+  id?: string;
+  nickname: string;
+  email?: string | null;
+  phone?: string | null;
+  user_id?: string | null;
+  avatar_url?: string | null;
+  host?: string;
+  access_token?: string;
+  refresh_token?: string | null;
+  /** ISO string or epoch seconds */
+  expires_at?: string | number | null;
+  plan_type?: string | null;
+  plan_reset_at?: string | null;
+  credits_balance?: number;
+  source?: string;
+  install_name?: string | null;
+  entitlement_packs?: EntitlementPack[] | null;
+  /** Complete decrypted auth blob from storage.json (credential-bearing) */
+  trae_auth_raw?: TraeAuthData | null;
+  /** Profile snapshot (what we know without re-fetching) */
+  trae_profile_raw?: { nickname: string | null; email: string | null; userId: string | null; avatarUrl: string | null; phone: string | null } | null;
+  /** Entitlement packs snapshot (Cockpit keeps the raw API response here) */
+  trae_entitlement_raw?: EntitlementPack[] | null;
+  usage_updated_at?: string | null;
+  last_used?: number | null;
+  created_at?: string;
+  updated_at?: string;
+  last_refreshed_at?: string | null;
+  // v1 legacy fields (camelCase)
+  userId?: string | null;
+  token?: string;
+}
+
 export interface ExportAccount {
-  version: 1;
+  version: 2;
   exportedAt: string;
-  accounts: Array<{
-    nickname: string;
-    email: string | null;
-    userId: string | null;
-    token: string;
-  }>;
+  accounts: ExportAccountEntry[];
 }
 
 export interface UserInfo {
@@ -184,6 +216,48 @@ export interface AppSettings {
   autoRestartTrae: boolean;
   /** Trae 可执行文件路径（留空则自动检测） */
   traeExePath: string;
+  /** 开启自动签到 */
+  autoCheckinEnabled: boolean;
+  /** 自动签到随机时间窗开始（HH:mm，本地时间） */
+  autoCheckinStart: string;
+  /** 自动签到随机时间窗结束（HH:mm，本地时间） */
+  autoCheckinEnd: string;
+}
+
+// Per-account result inside an auto-checkin run record
+export interface AutoCheckinAccountResult {
+  accountId: number;
+  accountName: string;
+  success: boolean;
+  alreadyClaimed: boolean;
+  creditsEarned: number;
+  message: string;
+}
+
+// One automatic check-in execution (scheduled run or manual test run)
+export interface AutoCheckinRecord {
+  id: number;
+  /** 'auto' = 定时触发, 'manual' = 测试执行 */
+  triggerType: 'auto' | 'manual';
+  /** 本地时间 ISO 字符串 */
+  runAt: string;
+  durationMs: number;
+  successCount: number;
+  alreadyCount: number;
+  failedCount: number;
+  total: number;
+  results: AutoCheckinAccountResult[];
+}
+
+// Live scheduler state for the UI
+export interface AutoCheckinStatus {
+  enabled: boolean;
+  start: string;
+  end: string;
+  /** 下次计划触发时间（本地 ISO），未启用或无法计算时为 null */
+  nextRunAt: string | null;
+  /** 今天是否已有一次自动签到记录 */
+  hasRunToday: boolean;
 }
 
 // Installer asset attached to a GitHub release
@@ -264,6 +338,12 @@ export const IPC_CHANNELS = {
   APP_INSTALL_UPDATE: 'app:install-update',
   APP_OPEN_RELEASE_PAGE: 'app:open-release-page',
   UPDATE_DOWNLOAD_PROGRESS: 'update:download-progress',
+  AUTOCHECKIN_GET_STATUS: 'autocheckin:get-status',
+  AUTOCHECKIN_SET_SETTINGS: 'autocheckin:set-settings',
+  AUTOCHECKIN_RUN_TEST: 'autocheckin:run-test',
+  AUTOCHECKIN_GET_RECORDS: 'autocheckin:get-records',
+  AUTOCHECKIN_CLEAR_RECORDS: 'autocheckin:clear-records',
+  AUTOCHECKIN_COMPLETED: 'autocheckin:completed',
 } as const;
 
 // IPC response wrapper

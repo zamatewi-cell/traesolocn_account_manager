@@ -5,8 +5,9 @@ import { getTraeworkService } from './traework.service';
 import { store } from '../utils/store';
 import { logger } from '../utils/logger';
 import { findExistingTraeStorage } from '../utils/paths';
+import { createHash } from 'crypto';
 import fs from 'fs';
-import type { Account, ExportAccount, CreditsInfo, LocalAccountInfo, TraeAuthData, EntitlementPack, UserInfo, UsageRecord } from '../../shared/types';
+import type { Account, ExportAccount, ExportAccountEntry, CreditsInfo, LocalAccountInfo, TraeAuthData, EntitlementPack, UserInfo, UsageRecord } from '../../shared/types';
 
 interface AccountRow {
   id: number;
@@ -509,12 +510,13 @@ export class AccountService {
   /**
    * Harvest fresh credentials the local Trae client wrote into storage.json.
    * While Trae runs it refreshes its own token (access tokens live ~minutes,
-   * the client silently renews them), so storage.json can hold a live token
-   * + refresh token that this app's DB knows nothing about - exactly what
-   * happens when an OAuth-imported row stored a dead web token. Rows whose
-   * DB token is expired/older adopt the live credentials; rows without a
-   * stored auth blob get the complete live blob so future switches are
-   * structurally valid for Trae.
+   * the client silently renews them) AND ROTATES the refresh token on every
+   * exchange - the rotated value exists only in storage.json. Rows must adopt
+   * the live token + refresh token whenever they differ (not just when the
+   * stored one is expired), otherwise the next switch writes back a refresh
+   * token that was already consumed, Trae answers RefreshTokenInvalid and
+   * clears the login. Rows without a stored auth blob get the complete live
+   * blob so future switches are structurally valid for Trae.
    */
   harvestLiveCredentials(): void {
     let locals: LocalAccountInfo[];
@@ -536,21 +538,63 @@ export class AccountService {
         continue;
       }
 
-      const rowExpired = this.isTokenExpired(row.tokenExpiredAt);
       const localExpired = this.isTokenExpired(local.expiredAt);
-      const rowBlob = this.getAccountAuthBlob(row.id);
+      if (localExpired) continue;
+      // Never regress a row to an older local session (e.g. storage.json was
+      // not touched since the row was refreshed via the API).
+      const localExpMs = new Date(local.expiredAt || this.parseJwtExp(local.token) || 0).getTime() || 0;
+      const rowExpMs = new Date(row.tokenExpiredAt || 0).getTime() || 0;
+      if (localExpMs < rowExpMs) continue;
 
-      if (rowExpired && !localExpired) {
+      const rowBlob = this.getAccountAuthBlob(row.id);
+      const rtRotated = !!local.refreshToken && (
+        (row.refreshToken || null) !== (local.refreshToken || null) ||
+        (rowBlob?.refreshToken || null) !== (local.refreshToken || null)
+      );
+      const needsAdopt = this.isTokenExpired(row.tokenExpiredAt) || !rowBlob || rtRotated;
+
+      if (needsAdopt) {
         this.persistToken(row.id, local.token, local.refreshToken || row.refreshToken, local.expiredAt || row.tokenExpiredAt);
         if (local.authBlob) this.saveAccountAuthBlob(row.id, local.authBlob);
         logger.info(`[Harvest] Adopted live credentials from local Trae for account ${row.id} (${row.nickname})`);
-      } else if (!rowBlob && local.authBlob && !localExpired) {
-        this.saveAccountAuthBlob(row.id, local.authBlob);
-        if (!row.refreshToken && local.refreshToken) {
-          this.persistToken(row.id, row.token, local.refreshToken, local.expiredAt || row.tokenExpiredAt);
-        }
-        logger.info(`[Harvest] Saved live auth blob for account ${row.id} (${row.nickname})`);
       }
+    }
+
+    // Fallback: revive credentially-bare rows from storage.json.bak backups.
+    // Each switch backs up the live storage before overwriting it, so a .bak
+    // holds the complete session of the account that was switched away from -
+    // often the only surviving copy of its client-issued refresh token (e.g.
+    // after the startup repair stripped a cross-contaminated credential).
+    // Only rows without ANY refresh token are revived; healthy rows are never
+    // regressed to a stale backup session.
+    let backups: LocalAccountInfo[] = [];
+    try {
+      backups = this.traework.detectLocalBackupAccounts();
+    } catch (err) {
+      logger.warn('[Harvest] Failed to read Trae storage backups:', (err as Error).message);
+    }
+
+    for (const backup of backups) {
+      if (!backup.userId || !backup.token || !this.crypto.isValidToken(backup.token)) continue;
+      if (this.isTokenExpired(backup.expiredAt)) continue;
+
+      const row = this.findAccountByUserId(backup.userId);
+      if (!row) continue;
+      if (this.tokenIdentityMismatch(backup.token, row.userId)) {
+        logger.warn(`[Harvest] Backup token for user ${backup.userId} does not match row ${row.id}; skipping`);
+        continue;
+      }
+
+      const rowBlob = this.getAccountAuthBlob(row.id);
+      if (row.refreshToken || rowBlob?.refreshToken) continue;
+
+      const backupExpMs = new Date(backup.expiredAt || this.parseJwtExp(backup.token) || 0).getTime() || 0;
+      const rowExpMs = new Date(row.tokenExpiredAt || 0).getTime() || 0;
+      if (backupExpMs < rowExpMs) continue;
+
+      this.persistToken(row.id, backup.token, backup.refreshToken || row.refreshToken, backup.expiredAt || row.tokenExpiredAt);
+      if (backup.authBlob) this.saveAccountAuthBlob(row.id, backup.authBlob);
+      logger.info(`[Harvest] Revived account ${row.id} (${row.nickname}) from ${backup.installName} backup session`);
     }
   }
 
@@ -1054,6 +1098,106 @@ export class AccountService {
   }
 
   /**
+   * Map every known refresh token to the set of user ids claiming it.
+   * Refresh tokens are opaque (not JWTs), so ownership can only be inferred
+   * from the places a token and a user id were captured TOGETHER:
+   *   - each account row's refresh_token column,
+   *   - each row's auth blob (only pairs where blob.userId is known),
+   *   - the live sessions in local Trae storages (authoritative).
+   * A refresh token claimed by exactly one user is owned by that user; one
+   * claimed by several users is cross-contaminated data and safe for nobody.
+   */
+  private buildRefreshTokenOwnership(): Map<string, Set<string>> {
+    const owners = new Map<string, Set<string>>();
+    const claim = (rt: string | null | undefined, userId: string | null | undefined) => {
+      if (!rt || !userId) return;
+      const set = owners.get(rt) || new Set<string>();
+      set.add(userId);
+      owners.set(rt, set);
+    };
+
+    for (const account of this.getAllAccounts()) {
+      claim(account.refreshToken, account.userId);
+      const blob = this.getAccountAuthBlob(account.id);
+      if (blob) {
+        claim(blob.refreshToken, blob.userId || account.userId);
+      }
+    }
+
+    try {
+      for (const local of this.traework.detectLocalAccounts()) {
+        claim(local.refreshToken, local.userId);
+      }
+    } catch (err) {
+      logger.warn('Failed to read local storages for refresh-token ownership:', (err as Error).message);
+    }
+
+    try {
+      for (const backup of this.traework.detectLocalBackupAccounts()) {
+        claim(backup.refreshToken, backup.userId);
+      }
+    } catch (err) {
+      logger.warn('Failed to read local storage backups for refresh-token ownership:', (err as Error).message);
+    }
+
+    return owners;
+  }
+
+  /**
+   * Startup repair for refresh tokens cross-contaminated by older builds.
+   * A row whose refresh token is claimed by a different user - or by several
+   * users at once - can never exchange into this row's session: Trae writes
+   * RefreshTokenInvalid and clears the login. Clear the unusable credential
+   * from both the column and the stored auth blob.
+   *
+   * When a token is claimed by SEVERAL users the true owner is ambiguous,
+   * but historically the contamination flowed INTO oauth-imported rows
+   * (they inherited template refresh tokens at switch time), while
+   * locally-imported rows captured their own credentials directly. So an
+   * ambiguous token survives only on the local_import claimant, if there is
+   * exactly one; every other row loses it. The affected rows then either
+   * re-adopt credentials from local storage / its backup (recovery/harvest)
+   * or the switch flow tells the user to log in again.
+   */
+  repairForeignRefreshTokens(): void {
+    const owners = this.buildRefreshTokenOwnership();
+    const accounts = this.getAllAccounts();
+    const sourceByUser = new Map<string, string>();
+    for (const a of accounts) {
+      if (a.userId && !sourceByUser.has(a.userId)) sourceByUser.set(a.userId, a.source);
+    }
+
+    for (const account of accounts) {
+      if (!account.refreshToken || !account.userId) continue;
+      const claims = owners.get(account.refreshToken);
+      if (!claims || (claims.size === 1 && claims.has(account.userId))) continue;
+
+      let keepFor: string | null = null;
+      if (claims.size > 1) {
+        const localImportClaimants = [...claims].filter(u => sourceByUser.get(u) === 'local_import');
+        if (localImportClaimants.length === 1) keepFor = localImportClaimants[0];
+      }
+      if (keepFor === account.userId) continue;
+
+      const db = getDatabase();
+      db.prepare(
+        "UPDATE accounts SET refresh_token = NULL, updated_at = datetime('now') WHERE id = ?"
+      ).run(account.id);
+
+      const blob = this.getAccountAuthBlob(account.id);
+      if (blob?.refreshToken) {
+        delete blob.refreshToken;
+        delete blob.refreshExpiredAt;
+        this.saveAccountAuthBlob(account.id, blob);
+      }
+
+      logger.warn(
+        `[Repair] Cleared refresh token of account ${account.id} (${account.nickname}): claimed by user(s) [${[...claims].join(', ')}] instead of ${account.userId}`
+      );
+    }
+  }
+
+  /**
    * Build the complete TraeAuthData to write into storage.json when switching.
    *
    * Trae validates structural fields (userRegion, account.scope, loginScope,
@@ -1067,6 +1211,11 @@ export class AccountService {
    * personal fields (username/avatar/mobile/email) are replaced with the
    * target account's own values (or removed when unknown, so a template
    * account's personal data never leaks into the written blob).
+   *
+   * Refresh credentials are NEVER inherited from a foreign template, and a
+   * refresh token that provably belongs to another user is stripped before
+   * the blob is returned: Trae exchanges the refresh token at startup and a
+   * foreign one gets RefreshTokenInvalid -> clearUserInfo (logged out).
    */
   private buildSwitchAuthData(
     account: Account,
@@ -1093,15 +1242,42 @@ export class AccountService {
       }
     }
 
+    // The template may belong to a DIFFERENT user (e.g. whoever is logged into
+    // local Trae right now). Its structural fields are safe to borrow, but its
+    // refresh credentials are NOT: Trae validates the refresh token whenever
+    // the access token is short-lived, and a foreign one makes it
+    // clearUserInfo - exactly the logged-out-after-switch symptom.
+    const foreignTemplate = !!(base?.userId && account.userId && base.userId !== account.userId);
+
     const authData: TraeAuthData = {
       ...(base || {}),
       token,
-      refreshToken: refreshToken || base?.refreshToken,
+      refreshToken: refreshToken || (foreignTemplate ? undefined : base?.refreshToken),
       userId: account.userId || base?.userId || '',
       host: account.host || base?.host,
       expiredAt: this.parseJwtExp(token) || account.tokenExpiredAt || base?.expiredAt,
       account: { ...(base?.account || {}) } as TraeAuthData['account'],
     };
+    if (foreignTemplate) {
+      delete authData.refreshToken;
+      delete authData.refreshExpiredAt;
+    }
+
+    // Ownership guard: a refresh token that provably belongs to another user,
+    // or that several users claim at once (ambiguous, cross-contaminated data),
+    // must never be written into storage.json. Trae's startup exchange would
+    // reject it (RefreshTokenInvalid) and clear the session. Strip it here;
+    // the caller refuses the switch outright when the remaining token is
+    // short-lived.
+    const rtOwners = authData.refreshToken ? this.buildRefreshTokenOwnership().get(authData.refreshToken) : undefined;
+    const rtPoisoned = !!authData.refreshToken && !!rtOwners && (rtOwners.size > 1 || !rtOwners.has(account.userId || ''));
+    if (rtPoisoned) {
+      logger.error(
+        `Switch: refresh token for account ${account.id} is claimed by other user(s) [${[...(rtOwners || [])].join(', ')}]; stripping unusable credential`
+      );
+      delete authData.refreshToken;
+      delete authData.refreshExpiredAt;
+    }
 
     if (!authData.userRegion) {
       authData.userRegion = { region: 'CN', _aiRegion: 'CN' };
@@ -1169,6 +1345,18 @@ export class AccountService {
       await new Promise(resolve => setTimeout(resolve, 1500));
     }
 
+    // Harvest the session Trae is about to leave BEFORE overwriting
+    // storage.json: Trae rotates its refresh token on every exchange and the
+    // rotated value lives only in storage.json. Capturing it now keeps the
+    // currently active account's row alive for the next switch back -
+    // otherwise that row writes back an already-consumed refresh token and
+    // Trae clears the login (RefreshTokenInvalid).
+    try {
+      this.harvestLiveCredentials();
+    } catch (err) {
+      logger.warn('Pre-switch credential harvest failed:', (err as Error).message);
+    }
+
     // Use a valid (live) token for switching
     const { token, refreshToken } = await this.ensureValidToken(account);
 
@@ -1186,6 +1374,23 @@ export class AccountService {
     // 2) use the current real blob from local storage.json as a template, or
     // 3) build a minimal one with default region fields (last resort).
     const authData = this.buildSwitchAuthData(account, token, refreshToken);
+
+    // A blob without a refresh token only keeps Trae logged in while the
+    // access token stays long-lived: Trae exchanges the refresh token at
+    // startup whenever the access token is short-lived, and a failed exchange
+    // clears the session (the logged-out-after-switch bug). Refuse the switch
+    // up front instead of writing credentials that are known to break.
+    if (!authData.refreshToken) {
+      const expIso = this.parseJwtExp(token);
+      const expiresSoon = !!expIso && new Date(expIso).getTime() - Date.now() < 24 * 60 * 60 * 1000;
+      if (expiresSoon) {
+        logger.error(
+          `Switch refused for account ${id}: no valid refresh token and the access token expires within 24h`
+        );
+        throw new Error('该账号缺少有效的刷新凭据（历史数据被污染已清理），请重新登录该账号后再切换');
+      }
+      logger.warn(`Switch: account ${id} has no refresh token; writing access-token-only blob (long-lived token)`);
+    }
 
     // Switch in every existing Trae storage so all installations (Trae CN /
     // TRAE SOLO CN) pick up the new account
@@ -1258,7 +1463,12 @@ export class AccountService {
   }
 
   /**
-   * Export accounts to JSON file.
+   * Export accounts to JSON file (v2 format).
+   *
+   * Unlike v1 (token-only), v2 carries the complete credential set —
+   * refresh_token plus the full decrypted auth blob — so an imported file
+   * restores switchable accounts without re-login. Field names follow the
+   * Cockpit-style reference export (snake_case) for interoperability.
    */
   exportAccounts(ids?: number[], filePath?: string): ExportAccount {
     let accounts = this.getAllAccounts();
@@ -1269,13 +1479,39 @@ export class AccountService {
     }
 
     const exportData: ExportAccount = {
-      version: 1,
+      version: 2,
       exportedAt: new Date().toISOString(),
       accounts: accounts.map(a => ({
+        id: a.userId ? `trae_${createHash('md5').update(a.userId).digest('hex')}` : undefined,
         nickname: a.nickname,
         email: a.email,
-        userId: a.userId,
-        token: a.token,
+        phone: a.phone,
+        user_id: a.userId,
+        avatar_url: a.avatarUrl,
+        host: a.host,
+        access_token: a.token,
+        refresh_token: a.refreshToken,
+        expires_at: a.tokenExpiredAt ? Math.floor(new Date(a.tokenExpiredAt).getTime() / 1000) : null,
+        plan_type: a.payIdentityStr,
+        plan_reset_at: a.payExpireAt ?? null,
+        credits_balance: a.creditsBalance,
+        source: a.source,
+        install_name: a.installName ?? null,
+        entitlement_packs: a.entitlementPacks,
+        trae_auth_raw: this.getAccountAuthBlob(a.id),
+        trae_profile_raw: {
+          nickname: a.nickname,
+          email: a.email,
+          userId: a.userId,
+          avatarUrl: a.avatarUrl,
+          phone: a.phone,
+        },
+        trae_entitlement_raw: a.entitlementPacks,
+        usage_updated_at: a.lastRefreshedAt,
+        last_used: a.lastRefreshedAt ? Math.floor(new Date(a.lastRefreshedAt).getTime() / 1000) : null,
+        created_at: a.createdAt,
+        updated_at: a.updatedAt,
+        last_refreshed_at: a.lastRefreshedAt,
       })),
     };
 
@@ -1288,28 +1524,82 @@ export class AccountService {
 
   /**
    * Import accounts from a JSON file.
+   * Supports three formats:
+   *  - v1 (legacy): { version: 1, accounts: [{ nickname, email, userId, token }] }
+   *  - v2 (this app): { version: 2, accounts: [{ snake_case ..., trae_auth_raw }] }
+   *  - Cockpit bare array: [{ snake_case ..., trae_auth_raw, ... }]
    */
   async importAccountsFromFile(filePath: string): Promise<Account[]> {
     const content = fs.readFileSync(filePath, 'utf-8');
-    const data = JSON.parse(content) as ExportAccount;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      throw new Error('文件不是有效的 JSON');
+    }
 
-    if (data.version !== 1) {
-      throw new Error('不支持的导出文件版本');
+    let entries: ExportAccountEntry[];
+    if (Array.isArray(parsed)) {
+      entries = parsed as ExportAccountEntry[];
+    } else if (parsed && typeof parsed === 'object' && Array.isArray((parsed as ExportAccount).accounts)) {
+      const wrapper = parsed as { version?: number; accounts: ExportAccountEntry[] };
+      if (wrapper.version !== 1 && wrapper.version !== 2) {
+        throw new Error('不支持的导出文件版本');
+      }
+      entries = wrapper.accounts;
+    } else {
+      throw new Error('无法识别的导出文件格式');
+    }
+
+    if (entries.length === 0) {
+      throw new Error('文件中没有账号数据');
     }
 
     const importedAccounts: Account[] = [];
 
-    for (const acc of data.accounts) {
+    for (const acc of entries) {
       try {
-        const account = await this.addAccount(acc.token, 'token_import', {
+        const token = acc.access_token || acc.token;
+        if (!token) {
+          logger.warn(`Import skipped ${acc.nickname || '(unnamed)'}: no access token`);
+          continue;
+        }
+
+        const blob = acc.trae_auth_raw ?? null;
+        const refreshToken = acc.refresh_token ?? (acc as { refreshToken?: string | null }).refreshToken ?? blob?.refreshToken ?? null;
+        const userId = acc.user_id ?? acc.userId ?? blob?.userId ?? null;
+        const host = acc.host ?? blob?.host ?? undefined;
+
+        let tokenExpiredAt: string | undefined;
+        const expRaw = acc.expires_at ?? (acc as { tokenExpiredAt?: string | null }).tokenExpiredAt;
+        if (typeof expRaw === 'number') {
+          tokenExpiredAt = new Date(expRaw * 1000).toISOString();
+        } else if (typeof expRaw === 'string' && expRaw) {
+          tokenExpiredAt = expRaw;
+        } else if (blob?.expiredAt) {
+          tokenExpiredAt = blob.expiredAt;
+        }
+
+        const account = await this.addAccount(token, 'token_import', {
           nickname: acc.nickname,
-          email: acc.email || undefined,
-          userId: acc.userId || undefined,
-        });
+          email: acc.email ?? undefined,
+          userId: userId ?? undefined,
+          avatarUrl: acc.avatar_url ?? undefined,
+          phone: acc.phone ?? undefined,
+          refreshToken: refreshToken ?? undefined,
+          host,
+          tokenExpiredAt,
+        }, blob ?? undefined);
+
         importedAccounts.push(account);
+        logger.info(`Imported account ${account.nickname} (user ${account.userId}) with ${blob ? 'full' : 'no'} auth blob`);
       } catch (err) {
         logger.warn(`Failed to import account ${acc.nickname}:`, err);
       }
+    }
+
+    if (importedAccounts.length === 0) {
+      throw new Error('没有账号被成功导入（token 可能全部无效）');
     }
 
     return importedAccounts;

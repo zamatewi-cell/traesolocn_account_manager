@@ -369,6 +369,51 @@ export class TraeworkService {
   }
 
   /**
+   * Detect account sessions preserved in storage.json.bak backups.
+   * Every switch backs up the live storage before overwriting it, so each
+   * .bak holds the complete session of the account that was switched AWAY
+   * from - often the only surviving copy of that account's client-issued
+   * refresh token (the live storage only ever holds one account). Used as a
+   * fallback credential source for rows whose own credentials were lost or
+   * damaged, e.g. by the cross-contamination cleanup.
+   */
+  detectLocalBackupAccounts(): LocalAccountInfo[] {
+    const accounts: LocalAccountInfo[] = [];
+    const seenUserIds = new Set<string>();
+
+    for (const inst of findExistingTraeStorage()) {
+      if (!fs.existsSync(inst.backupPath)) continue;
+      const data = this.readStorageFromPath(inst.backupPath);
+      if (!data) continue;
+
+      const authData = this.decryptAuthData(data);
+      if (!authData || !authData.token) continue;
+
+      const userId = authData.userId;
+      if (userId && seenUserIds.has(userId)) {
+        // Same user in several backups: keep the freshest session.
+        const existing = accounts.find(a => a.userId === userId);
+        if (existing) {
+          const existingExp = existing.expiredAt ? new Date(existing.expiredAt).getTime() : 0;
+          const newExp = authData.expiredAt ? new Date(authData.expiredAt).getTime() : 0;
+          if (newExp > existingExp) {
+            const idx = accounts.indexOf(existing);
+            accounts[idx] = this.buildLocalAccountInfo(`${inst.name} (backup)`, inst.backupPath, authData);
+          }
+        }
+        continue;
+      }
+      if (userId) {
+        seenUserIds.add(userId);
+      }
+
+      accounts.push(this.buildLocalAccountInfo(`${inst.name} (backup)`, inst.backupPath, authData));
+    }
+
+    return accounts;
+  }
+
+  /**
    * Score how structurally complete an auth blob is. Trae-written blobs carry
    * userRegion / scope / loginScope etc.; minimal blobs written by older
    * versions of this app do not.
