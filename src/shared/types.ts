@@ -335,6 +335,7 @@ export const IPC_CHANNELS = {
   APP_LAUNCH_TRAEWORK: 'app:launch-traework',
   APP_GET_VERSION: 'app:get-version',
   APP_CHECK_UPDATE: 'app:check-update',
+  APP_UPDATE_AVAILABLE: 'app:update-available',
   APP_DOWNLOAD_UPDATE: 'app:download-update',
   APP_INSTALL_UPDATE: 'app:install-update',
   APP_OPEN_RELEASE_PAGE: 'app:open-release-page',

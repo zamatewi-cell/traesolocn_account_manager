@@ -123,6 +123,13 @@ const electronAPI = {
         ipcRenderer.removeListener(IPC_CHANNELS.UPDATE_DOWNLOAD_PROGRESS, listener);
       };
     },
+    onUpdateAvailable: (callback: (info: { latestVersion: string; releaseUrl: string }) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, info: { latestVersion: string; releaseUrl: string }) => callback(info);
+      ipcRenderer.on(IPC_CHANNELS.APP_UPDATE_AVAILABLE, listener);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.APP_UPDATE_AVAILABLE, listener);
+      };
+    },
   },
 };
 

@@ -97,7 +97,14 @@ function useAccountsState() {
           }
           return [result.data!, ...prev];
         });
-        showToast(t.toast.loggedInAs(result.data.nickname), 'success');
+        if (result.data.refreshToken) {
+          showToast(t.toast.loggedInAs(result.data.nickname), 'success');
+        } else {
+          // Fresh machine without a matching local Trae session: only the
+          // short-lived web token was captured. Tell the user now instead of
+          // letting the account silently die with 401s in a few hours.
+          showToast(t.toast.loggedInNoRefreshToken, 'warning', 10000);
+        }
         return true;
       } else {
         showToast(result.error || t.toast.loginFailed, 'error');

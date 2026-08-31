@@ -216,13 +216,17 @@ export class ApiService {
   }
 
   /**
-   * Get user entitlement packs (quota/usage info).
+   * Get the account's entitlement packs.
    * Uses Authorization: Cloud-IDE-JWT header. POST with require_usage body.
    * CN prefers v2 endpoint, falls back to v1, then to user_current_entitlement_list.
+   * Returns null when EVERY endpoint failed (auth error, network error) so
+   * callers can distinguish "query failed" from "verified no entitlements".
+   * Treating null as [] used to blank stored credits on refresh failures.
    */
-  async getEntitlements(token: string, host: string): Promise<EntitlementPack[]> {
+  async getEntitlements(token: string, host: string): Promise<EntitlementPack[] | null> {
     const origin = resolveOrigin(host);
     const paths = [TRAE_ENT_USAGE_PATH_V2, TRAE_ENT_USAGE_PATH_V1, TRAE_CN_CURRENT_ENTITLEMENT_LIST_PATH];
+    let anyEndpointOk = false;
 
     for (const path of paths) {
       try {
@@ -238,6 +242,7 @@ export class ApiService {
           logger.warn('getEntitlements returned error code:', response.code, response.message);
           continue;
         }
+        anyEndpointOk = true;
 
         const result = payloadRoot(response);
         let packs: any[] = [];
@@ -267,7 +272,8 @@ export class ApiService {
       }
     }
 
-    return [];
+    // Every endpoint failed - "unknown", not "empty".
+    return anyEndpointOk ? [] : null;
   }
 
   /**
@@ -345,8 +351,14 @@ export class ApiService {
    * Uses Authorization: Cloud-IDE-JWT + x-app-type + x-device-id headers.
    * NOTE: The checkin API for CN accounts requires Cloud-IDE-JWT auth (Bearer returns code 1001).
    * URL includes ?did={deviceId} query param.
+   *
+   * Returns null when the query FAILS (auth error, network error, unexpected
+   * response). Callers must treat null as "unknown" - the previous all-false
+   * fallback object was indistinguishable from "not checked in", which reset
+   * is_checked_in on every failed refresh and made the account look like it
+   * still needed a (pointless, device-slot-burning) claim.
    */
-  async getCheckinStatus(token: string, host: string, deviceId?: string): Promise<CheckinStatus> {
+  async getCheckinStatus(token: string, host: string, deviceId?: string): Promise<CheckinStatus | null> {
     const origin = resolveOrigin(host);
     try {
       const headers: Record<string, string> = {
@@ -364,11 +376,14 @@ export class ApiService {
       const response: any = await this.rawGet(url, headers);
 
       const result = payloadRoot(response);
-      const code = response?.code ?? result?.code;
+      const code = Number(response?.code ?? result?.code ?? 0);
+      logger.info(
+        `getCheckinStatus code=${code} raw=${JSON.stringify(response ?? result).slice(0, 300)}`
+      );
       // code 0 = success, code 1001 = auth failure (token invalid/expired)
-      if (code !== undefined && code !== 0 && code !== 200) {
-        logger.warn('getCheckinStatus auth failed, code:', code, response?.message);
-        return { checkedIn: false, canCheckin: false, credits: 0, enable: false };
+      if (code !== 0 && code !== 200) {
+        logger.warn('getCheckinStatus failed, code:', code, response?.message);
+        return null;
       }
       const checkedIn = !!(result?.checked_in ?? result?.checkedIn ?? false);
       const credits = Number(result?.credits ?? result?.credit ?? 0);
@@ -382,7 +397,7 @@ export class ApiService {
       };
     } catch (err) {
       logger.error('getCheckinStatus failed:', err);
-      return { checkedIn: false, canCheckin: false, credits: 0, enable: false };
+      return null;
     }
   }
 
@@ -446,17 +461,25 @@ export class ApiService {
       });
 
       const result = payloadRoot(response);
-      const code = response?.code ?? result?.code;
+      const code = Number(response?.code ?? result?.code ?? 0);
+      const message = String(response?.message ?? result?.message ?? '');
+      // Log the raw response so failures on remote machines can be diagnosed
+      // from %APPDATA%\trae-account-manager\app.log without a debugger.
+      logger.info(
+        `claimCheckin code=${code} msg="${message.slice(0, 120)}" raw=${JSON.stringify(response ?? result).slice(0, 300)}`
+      );
 
-      // code 9074 = rate limited ("操作太过频繁啦，请稍后尝试")
+      // code 9074 = rate limited ("操作太过频繁啦，请稍后尝试"); also returned for
+      // device IDs the server does not recognize (e.g. the random fallback ID
+      // used when no local Trae session has ever registered this machine).
       if (code === 9074) {
-        throw new Error('操作太频繁，请稍后再试 (9074)');
+        throw new Error('操作太频繁 (9074)；若本机从未登录过 Trae 客户端，请先登录一次再签到');
       }
 
       // code 0 = success
       const alreadyClaimed = code !== 0 && code !== 200 && (
-        response?.message?.includes('already') ||
-        response?.message?.includes('已签到') ||
+        message.includes('already') ||
+        message.includes('已签到') ||
         result?.checked_in ||
         result?.checkedIn
       );
@@ -469,7 +492,7 @@ export class ApiService {
       if (success && !alreadyClaimed) {
         try {
           const afterStatus = await this.getCheckinStatus(token, host, deviceId);
-          if (afterStatus.credits > 0) {
+          if (afterStatus && afterStatus.credits > 0) {
             creditsEarned = afterStatus.credits;
           }
         } catch {
@@ -613,11 +636,12 @@ export class ApiService {
    */
   async validateToken(token: string, host: string): Promise<{ valid: boolean; userInfo?: UserInfo; payStatus?: CreditsInfo; entitlements?: EntitlementPack[] }> {
     try {
-      const [userInfo, entitlements, payStatus] = await Promise.all([
+      const [userInfo, entitlementResult, payStatus] = await Promise.all([
         this.getUserInfo(token, host).catch(() => null),
-        this.getEntitlements(token, host).catch(() => [] as EntitlementPack[]),
+        this.getEntitlements(token, host).catch(() => null),
         this.getPayStatus(token, host).catch((): CreditsInfo => ({ balance: 0 })),
       ]);
+      const entitlements: EntitlementPack[] = entitlementResult || [];
 
       const valid = entitlements.length > 0 || payStatus.identityStr !== undefined || userInfo !== null;
       return { valid, userInfo: userInfo || undefined, payStatus: { ...payStatus, entitlementPacks: entitlements }, entitlements };

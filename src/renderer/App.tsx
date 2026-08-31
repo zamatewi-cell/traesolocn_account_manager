@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { TitleBar } from './components/common/TitleBar';
 import { Sidebar, type Page } from './components/layout/Sidebar';
 import { AccountListPage } from './pages/AccountList';
@@ -7,6 +7,8 @@ import { StatsPage } from './pages/Stats';
 import { SettingsPage } from './pages/Settings';
 import { AddAccountDialog } from './components/common/AddAccountDialog';
 import { useAccounts } from './hooks/useAccounts';
+import { useToast } from './contexts/ToastContext';
+import { useLanguage } from './contexts/LanguageContext';
 
 function AuroraBackground() {
   return (
@@ -22,6 +24,8 @@ function AuroraBackground() {
 function AppContent() {
   const [currentPage, setCurrentPage] = useState<Page>('accounts');
   const [showAddDialog, setShowAddDialog] = useState(false);
+  const { showToast } = useToast();
+  const { t } = useLanguage();
   const {
     accounts,
     refreshing,
@@ -31,6 +35,14 @@ function AppContent() {
     addFromLocal,
     importFromJson,
   } = useAccounts();
+
+  // Startup update check result pushed by the main process
+  useEffect(() => {
+    const unsubscribe = window.electronAPI.app.onUpdateAvailable((info) => {
+      showToast(t.toast.updateAvailable(info.latestVersion), 'info', 8000);
+    });
+    return unsubscribe;
+  }, [showToast, t]);
 
   return (
     <div className="relative h-screen w-screen flex flex-col overflow-hidden bg-bg-primary text-text-primary">

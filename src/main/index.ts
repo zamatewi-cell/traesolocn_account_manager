@@ -5,6 +5,8 @@ import { registerAllIpcHandlers } from './ipc';
 import { ensureDirectories } from './utils/paths';
 import { getAccountService } from './services/account.service';
 import { getAutoCheckinService } from './services/auto-checkin.service';
+import { getUpdateService } from './services/update.service';
+import { IPC_CHANNELS } from '../shared/types';
 import { logger } from './utils/logger';
 
 // Single instance lock
@@ -95,6 +97,25 @@ if (!gotTheLock) {
 
     // Create main window
     createMainWindow();
+
+    // Silent startup update check. On machines that cannot reach GitHub the
+    // jsDelivr mirror fallback still runs; failures are logged only. When a
+    // newer version is found, push it to the renderer for a toast.
+    setTimeout(() => {
+      void getUpdateService().checkForUpdates().then((info) => {
+        if (!info.updateAvailable) return;
+        logger.info(`Startup update check: v${info.latestVersion} is available`);
+        const win = getMainWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send(IPC_CHANNELS.APP_UPDATE_AVAILABLE, {
+            latestVersion: info.latestVersion,
+            releaseUrl: info.releaseUrl,
+          });
+        }
+      }).catch((err) => {
+        logger.warn('Startup update check failed:', (err as Error).message);
+      });
+    }, 8000);
 
     // macOS: re-create window when dock icon clicked
     app.on('activate', () => {

@@ -132,10 +132,82 @@ export class TraeworkService {
   }
 
   /**
-   * Detect the Trae executable path.
-   * Priority: 1) running process path, 2) last known path from store,
-   *           3) common install locations.
-   * Returns null if not found.
+   * Find Trae install locations from the Windows Uninstall registry.
+   * Covers custom install directories that neither the running-process scan
+   * nor the common-path templates know about (typical on other machines).
+   */
+  private async findTraeExeFromRegistry(): Promise<string[]> {
+    const uninstallRoots = [
+      'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+      'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+      'HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+    ];
+    const found: string[] = [];
+
+    for (const root of uninstallRoots) {
+      let stdout = '';
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const result = await execAsync(`reg query "${root}" /s`, { timeout: 15000, maxBuffer: 4 * 1024 * 1024 });
+        stdout = result.stdout;
+      } catch {
+        // Key missing or reg.exe unavailable - try the next hive
+        continue;
+      }
+
+      // Parse the key/value dump into per-application blocks
+      const blocks: Array<{ displayName: string; displayIcon: string; installLocation: string }> = [];
+      let current: { displayName: string; displayIcon: string; installLocation: string } | null = null;
+      for (const line of stdout.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (/^HKEY_/.test(trimmed)) {
+          if (current) blocks.push(current);
+          current = { displayName: '', displayIcon: '', installLocation: '' };
+          continue;
+        }
+        const valueMatch = trimmed.match(/^(DisplayName|DisplayIcon|InstallLocation)\s+REG_SZ\s+(.*)$/i);
+        if (valueMatch && current) {
+          const key = valueMatch[1].toLowerCase();
+          const val = valueMatch[2].trim();
+          if (key === 'displayname') current.displayName = val;
+          else if (key === 'displayicon') current.displayIcon = val;
+          else if (key === 'installlocation') current.installLocation = val;
+        }
+      }
+      if (current) blocks.push(current);
+
+      for (const app of blocks) {
+        const name = app.displayName || '';
+        if (!/trae/i.test(name)) continue;
+        if (/account\s*manager/i.test(name)) continue;
+
+        // DisplayIcon usually points straight at the exe (may carry a ",0" icon index)
+        if (app.displayIcon) {
+          const exe = app.displayIcon.replace(/,\d+$/, '').replace(/^"|"$/g, '');
+          if (fs.existsSync(exe) && !this.isSelfExePath(exe)) {
+            found.push(exe);
+            continue;
+          }
+        }
+        if (app.installLocation) {
+          const dir = app.installLocation.replace(/\\$/, '');
+          for (const preferred of TRAE_EXE_BASENAME_PRIORITY) {
+            const candidate = path.join(dir, preferred);
+            if (fs.existsSync(candidate) && !this.isSelfExePath(candidate)) {
+              found.push(candidate);
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    return found;
+  }
+
+  /**
+   * Find the Trae executable path.
+   * Detection chain: running process → cached path → common locations → registry.
    */
   async findTraeExePath(): Promise<string | null> {
     // 1. Try to get the path from a running Trae process. Multiple Trae
@@ -182,6 +254,19 @@ export class TraeworkService {
           // ignore
         }
       }
+    }
+
+    // 4. Uninstall registry (custom install directories on other machines)
+    try {
+      const registryPaths = await this.findTraeExeFromRegistry();
+      if (registryPaths.length > 0) {
+        const preferred = this.pickPreferredTraeExe(registryPaths);
+        logger.info(`Detected Trae exe from registry: ${preferred}`);
+        store.set('lastKnownTraeExe', preferred);
+        return preferred;
+      }
+    } catch (err) {
+      logger.warn('Registry-based Trae detection failed:', (err as Error).message);
     }
 
     return null;

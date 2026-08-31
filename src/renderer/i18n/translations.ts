@@ -244,6 +244,8 @@ export interface Translations {
     allAccountsRefreshed: string;
     accountAdded: (name: string) => string;
     loggedInAs: (name: string) => string;
+    loggedInNoRefreshToken: string;
+    updateAvailable: (version: string) => string;
     importedLocal: (name: string) => string;
     importedAccounts: (count: number) => string;
     exportedSuccess: string;
@@ -511,6 +513,9 @@ const en: Translations = {
     allAccountsRefreshed: 'All accounts refreshed',
     accountAdded: (name) => `Account "${name}" added successfully`,
     loggedInAs: (name) => `Logged in as "${name}"`,
+    loggedInNoRefreshToken:
+      'Logged in, but no refresh credential was captured. Without a matching local Trae session the web token is short-lived - log this account into the Trae client once (or re-add via local import) to capture complete credentials.',
+    updateAvailable: (version) => `New version v${version} available - update in Settings`,
     importedLocal: (name) => `Imported local account "${name}"`,
     importedAccounts: (count) => `Imported ${count} account(s)`,
     exportedSuccess: 'Accounts exported successfully',
@@ -777,6 +782,9 @@ const zh: Translations = {
     allAccountsRefreshed: '所有账号已刷新',
     accountAdded: (name) => `账号 "${name}" 添加成功`,
     loggedInAs: (name) => `已登录为 "${name}"`,
+    loggedInNoRefreshToken:
+      '已登录，但未捕获到刷新凭据。本机没有匹配的 Trae 客户端会话时，网页令牌有效期很短——请先在 Trae 客户端登录一次该账号（或改用本地导入）以获得完整凭据。',
+    updateAvailable: (version) => `发现新版本 v${version}，请前往设置页更新`,
     importedLocal: (name) => `已导入本地账号 "${name}"`,
     importedAccounts: (count) => `已导入 ${count} 个账号`,
     exportedSuccess: '账号导出成功',

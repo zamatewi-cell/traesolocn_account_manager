@@ -130,6 +130,7 @@ export class AccountService {
         if (traeDeviceId) {
           this.deviceId = traeDeviceId;
           store.set('checkin_device_id', traeDeviceId);
+          logger.info(`Checkin deviceId: using Trae-registered device (${traeDeviceId.slice(0, 8)}..)`);
           return this.deviceId;
         }
       } catch (err) {
@@ -142,6 +143,11 @@ export class AccountService {
         store.set('checkin_device_id', id);
       }
       this.deviceId = id;
+      // No registered Trae device on this machine - the claim API rejects
+      // unknown device IDs (9074). Log it so remote machines can be diagnosed.
+      logger.warn(
+        `Checkin deviceId: no Trae-registered device found, using fallback ID (${id.slice(0, 8)}..) - check-in may be rejected with 9074 until Trae is logged in once on this machine`
+      );
     }
     return this.deviceId;
   }
@@ -209,11 +215,17 @@ export class AccountService {
     let entitlements: EntitlementPack[] = [];
 
     try {
-      [userInfo, entitlements, payStatus] = await Promise.all([
+      const [userInfoR, entitlementsR, payStatusR] = await Promise.all([
         this.api.getUserInfo(token, host).catch(() => null),
-        this.api.getEntitlements(token, host).catch(() => [] as EntitlementPack[]),
+        this.api.getEntitlements(token, host).catch(() => null),
         this.api.getPayStatus(token, host).catch((): CreditsInfo => ({ balance: 0 })),
       ]);
+      userInfo = userInfoR;
+      // A failed entitlements query (null) must not be treated as "no packs"
+      // here either - at add-time we simply show what we have and let the
+      // next refresh fill in the rest.
+      entitlements = entitlementsR || [];
+      payStatus = payStatusR;
     } catch (err) {
       logger.warn('Failed to fetch account info from API during add:', (err as Error).message);
     }
@@ -868,17 +880,18 @@ export class AccountService {
 
     try {
       const deviceId = this.getDeviceId();
-      // Fetch user info, entitlements, pay status, and checkin status in parallel
+      // Fetch user info, entitlements, pay status, and checkin status in parallel.
+      // Failed queries resolve to null/defaults - they must never blank the
+      // stored data (see the entitlements guard below).
       const [userInfo, entitlements, payStatus, checkinStatus] = await Promise.all([
         this.api.getUserInfo(token, host).catch(() => null),
-        this.api.getEntitlements(token, host).catch(() => [] as EntitlementPack[]),
+        this.api.getEntitlements(token, host).catch(() => null),
         this.api.getPayStatus(token, host).catch((): CreditsInfo => ({ balance: account.creditsBalance })),
         this.api.getCheckinStatus(token, host, deviceId).catch(() => null),
       ]);
 
       const updates: Record<string, unknown> = {
         last_refreshed_at: new Date().toISOString(),
-        entitlement_packs: entitlements.length > 0 ? JSON.stringify(entitlements) : null,
         pay_status: payStatus?.payStatus ?? account.payStatus,
         pay_identity_str: payStatus?.identityStr ?? account.payIdentityStr,
       };
@@ -921,17 +934,24 @@ export class AccountService {
         }
       }
 
-      // Update credits balance (computed from entitlement remaining quota)
-      updates.credits_balance = this.computeCreditsBalance(entitlements);
+      // Entitlement-derived fields are only overwritten when the query SUCCEEDED
+      // (entitlements !== null). A failed query used to write credits_balance=0
+      // and entitlement_packs=null - the "积分显示为 0 / 账号信息显示不完全"
+      // state seen after any transient failure (expired token, rate limit,
+      // network error) on other machines.
+      if (entitlements !== null) {
+        updates.entitlement_packs = entitlements.length > 0 ? JSON.stringify(entitlements) : null;
+        updates.credits_balance = this.computeCreditsBalance(entitlements);
 
-      // Total usage = sum of used quota across entitlement packs
-      let totalUsage = 0;
-      for (const pack of entitlements) {
-        const quota = pack.entitlement_quota;
-        if (quota && quota.used_quota > 0) totalUsage += quota.used_quota;
-      }
-      if (totalUsage > 0) {
-        updates.total_usage = Math.round(totalUsage * 100) / 100;
+        // Total usage = sum of used quota across entitlement packs
+        let totalUsage = 0;
+        for (const pack of entitlements) {
+          const quota = pack.entitlement_quota;
+          if (quota && quota.used_quota > 0) totalUsage += quota.used_quota;
+        }
+        if (totalUsage > 0) {
+          updates.total_usage = Math.round(totalUsage * 100) / 100;
+        }
       }
 
       // Build dynamic update query
@@ -1673,8 +1693,38 @@ export class AccountService {
       };
     }
 
-    // First check current checkin status
+    // Pre-flight token liveness check. A dead token must NEVER reach the claim
+    // endpoint: the server records the DEVICE's daily checkin slot even when it
+    // later rejects the claim for auth, leaving the account in the
+    // "该设备今日已签到 but 积分没有增加" state with no way to retry that day.
+    // ensureValidToken already tried the refresh token; if we still hold an
+    // expired JWT there is nothing left to do but ask for a re-import.
+    const tokenExpIso = this.parseJwtExp(token);
+    const tokenExpired = !!tokenExpIso && new Date(tokenExpIso).getTime() <= Date.now();
+    if (!this.crypto.isValidToken(token) || tokenExpired) {
+      logger.error(
+        `Checkin refused for account ${id}: token is invalid or expired (exp=${tokenExpIso ?? 'unknown'}) and could not be refreshed`
+      );
+      return {
+        success: false,
+        creditsEarned: 0,
+        message: '该账号令牌已过期且无法自动刷新，已跳过签到（请删除后重新导入该账号，或重新登录后再导入）',
+        alreadyCheckedIn: false,
+      };
+    }
+
+    // First check current checkin status. A null result means the query failed
+    // (auth/network) - treat it as unknown and abort instead of claiming.
     const status = await this.api.getCheckinStatus(token, host, deviceId);
+    if (!status) {
+      logger.warn(`Checkin aborted for account ${id}: status query failed`);
+      return {
+        success: false,
+        creditsEarned: 0,
+        message: '签到状态查询失败（令牌可能已失效或网络异常），已跳过签到以免占用当日设备名额',
+        alreadyCheckedIn: false,
+      };
+    }
 
     if (status.checkedIn) {
       return {
