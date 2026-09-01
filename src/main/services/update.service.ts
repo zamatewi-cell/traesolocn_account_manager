@@ -79,12 +79,15 @@ export class UpdateService {
   }
 
   private async checkViaGithubApi(currentVersion: string): Promise<UpdateInfo> {
-    const res = await net.fetch(RELEASES_LATEST_API, {
+    // Cache-busting query + cache:'no-store': a version check made right
+    // after a release must never be served from a cached response.
+    const res = await net.fetch(`${RELEASES_LATEST_API}?_=${Date.now()}`, {
       headers: {
         'User-Agent': USER_AGENT,
         Accept: 'application/vnd.github+json',
       },
       signal: AbortSignal.timeout(15000),
+      cache: 'no-store',
     });
     if (!res.ok) {
       throw new Error(`GitHub API HTTP ${res.status}`);
@@ -116,9 +119,17 @@ export class UpdateService {
     let lastError = '无法访问 GitHub 更新源';
     for (const cdnUrl of VERSION_CHECK_FALLBACKS) {
       try {
-        const res = await net.fetch(cdnUrl, {
+        // jsDelivr serves package.json with Cache-Control: max-age=604800,
+        // and Electron's net.fetch reuses its HTTP disk cache without
+        // revalidation. A version check issued right after a release would
+        // therefore keep returning the PREVIOUS version for days (observed:
+        // v1.2.0 published + CDN purged, app still saw 1.1.9). A unique URL
+        // per check busts every cache layer; cache:'no-store' is belt and
+        // braces in case Electron honors it.
+        const res = await net.fetch(`${cdnUrl}?_=${Date.now()}`, {
           headers: { 'User-Agent': USER_AGENT },
           signal: AbortSignal.timeout(10000),
+          cache: 'no-store',
         });
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
