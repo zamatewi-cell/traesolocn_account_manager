@@ -4,7 +4,7 @@ import { getApiService } from './api.service';
 import { getTraeworkService } from './traework.service';
 import { store } from '../utils/store';
 import { logger } from '../utils/logger';
-import { findExistingTraeStorage } from '../utils/paths';
+import { findExistingTraeStorage, findPreferredTraeStorage } from '../utils/paths';
 import { createHash } from 'crypto';
 import { BrowserWindow } from 'electron';
 import { IPC_CHANNELS } from '../../shared/types';
@@ -1361,7 +1361,8 @@ export class AccountService {
     // Auto-close Trae before switching (if enabled and running)
     if (running && autoClose) {
       logger.info(`Auto-closing Trae before switching to account ${account.id}...`);
-      capturedExePaths = await this.traework.getRunningTraeExePaths();
+      // Restart afterwards ONLY the preferred product, never Trae CN / Trae
+      capturedExePaths = this.traework.filterPreferredExe(await this.traework.getRunningTraeExePaths());
       await this.traework.closeTraework();
       // Give the process a moment to fully exit and flush storage.json
       await new Promise(resolve => setTimeout(resolve, 1500));
@@ -1414,11 +1415,16 @@ export class AccountService {
       logger.warn(`Switch: account ${id} has no refresh token; writing access-token-only blob (long-lived token)`);
     }
 
-    // Switch in every existing Trae storage so all installations (Trae CN /
-    // TRAE SOLO CN) pick up the new account
+    // Switch ONLY the preferred product's storage (TRAE SOLO CN when
+    // installed). Writing every installation's storage.json used to also
+    // re-login Trae CN (a separate IDE with its own active session) into the
+    // switched account - "带着 Trae CN 一起切了".
+    const preferred = findPreferredTraeStorage();
     const targets = storagePath
       ? [{ storagePath }]
-      : findExistingTraeStorage().map(s => ({ storagePath: s.storagePath }));
+      : preferred
+        ? [{ storagePath: preferred.storagePath }]
+        : [];
 
     if (targets.length === 0) {
       throw new Error('未找到 Trae 存储文件，请先运行 Trae 并登录');
@@ -1715,7 +1721,13 @@ export class AccountService {
 
     // First check current checkin status. A null result means the query failed
     // (auth/network) - treat it as unknown and abort instead of claiming.
-    const status = await this.api.getCheckinStatus(token, host, deviceId);
+    // Transient network drops (e.g. proxy/TUN reconnects) are common, so the
+    // query gets one quick retry before giving up.
+    let status = await this.api.getCheckinStatus(token, host, deviceId).catch(() => null);
+    if (!status) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      status = await this.api.getCheckinStatus(token, host, deviceId).catch(() => null);
+    }
     if (!status) {
       logger.warn(`Checkin aborted for account ${id}: status query failed`);
       return {
@@ -1735,8 +1747,58 @@ export class AccountService {
       };
     }
 
-    // Perform checkin
-    const result = await this.api.claimCheckin(token, host, deviceId);
+    // Perform checkin. Network-level failures (fetch failed / aborted) are
+    // common with proxy or VPN reconnects; retry with backoff instead of
+    // surfacing an immediate failure - a single dropped request previously
+    // left the account unsigned while the user was told "签到失败".
+    let result: Awaited<ReturnType<typeof this.api.claimCheckin>> | null = null;
+    let lastClaimError: Error | null = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        result = await this.api.claimCheckin(token, host, deviceId);
+        break;
+      } catch (err) {
+        lastClaimError = err as Error;
+        logger.warn(`Checkin claim attempt ${attempt}/3 for account ${id} failed: ${lastClaimError.message}`);
+        if (attempt < 3) {
+          await new Promise(resolve => setTimeout(resolve, attempt * 2000));
+        }
+      }
+    }
+
+    if (!result) {
+      // All attempts failed at the network layer. The request may still have
+      // reached the server (response lost on the way back), so re-query the
+      // status: if it now reads checked_in, the claim actually succeeded and
+      // we must NOT report failure (which would mislead the user into
+      // retrying manually and seeing "该设备今日已签到" with no credits).
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      const afterStatus = await this.api.getCheckinStatus(token, host, deviceId).catch(() => null);
+      if (afterStatus?.checkedIn) {
+        logger.info(`Checkin for account ${id}: claim response was lost but server confirms checked_in`);
+        const db = getDatabase();
+        db.prepare(`
+          UPDATE accounts
+          SET is_checked_in = 1,
+              checkin_credits = COALESCE(checkin_credits, 0) + ?,
+              last_checkin_at = datetime('now'),
+              updated_at = datetime('now')
+          WHERE id = ?
+        `).run(afterStatus.credits || 0, id);
+        try {
+          await this.refreshAccount(id);
+        } catch {
+          // Ignore refresh errors after confirmed checkin
+        }
+        return {
+          success: true,
+          creditsEarned: afterStatus.credits || 0,
+          message: `签到成功（网络波动导致响应丢失，已通过状态查询确认），获得 ${afterStatus.credits || 0} 积分`,
+          alreadyCheckedIn: false,
+        };
+      }
+      throw new Error(`签到失败：网络异常（已重试 3 次），请检查网络后重试。最后错误：${lastClaimError?.message ?? 'unknown'}`);
+    }
 
     if (result.success) {
       // Update account status.

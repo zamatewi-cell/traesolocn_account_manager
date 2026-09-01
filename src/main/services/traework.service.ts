@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
-import { findExistingTraeStorage, getTraeStoragePaths } from '../utils/paths';
+import { findExistingTraeStorage, findPreferredTraeStorage, getTraeStoragePaths } from '../utils/paths';
 import { writeJsonAtomic, restoreFromBackup } from '../utils/atomic-file';
 import { getCryptoService } from './crypto.service';
 import { logger } from '../utils/logger';
@@ -67,32 +67,24 @@ export class TraeworkService {
   }
 
   /**
-   * Check if any Traework instance is currently running.
+   * Reduce a list of exe paths to the preferred product's executable only.
+   * Used before relaunching after a switch so only TRAE SOLO CN restarts.
+   */
+  filterPreferredExe(paths: string[]): string[] {
+    const preferred = this.pickPreferredTraeExe(paths);
+    return preferred ? [preferred] : [];
+  }
+
+  /**
+   * Check if the PREFERRED Trae product is currently running.
+   * Only TRAE SOLO CN counts: a running Trae CN / international Trae must NOT
+   * block account switching, because switching never touches those products.
    */
   async isTraeworkRunning(): Promise<boolean> {
+    const name = findPreferredTraeStorage()?.processName ?? 'TRAE SOLO CN.exe';
     try {
-      const processNames = getTraeStoragePaths().map(p => p.processName);
-      for (const name of processNames) {
-        try {
-          const { stdout } = await execAsync(`tasklist /FI "IMAGENAME eq ${name}" /FO CSV /NH`);
-          if (stdout.includes(name)) {
-            return true;
-          }
-        } catch {
-          // Continue checking other names
-        }
-      }
-      // Also try generic check
-      try {
-        const { stdout } = await execAsync('tasklist /FI "IMAGENAME eq TRAE*.exe" /FO CSV /NH');
-        const lines = stdout.split('\n').filter(l => l.trim() && l.toLowerCase().includes('trae'));
-        // Exclude our own process
-        const isOtherTrae = lines.some(l => !l.includes('Trae Account Manager'));
-        if (isOtherTrae) return true;
-      } catch {
-        // ignore
-      }
-      return false;
+      const { stdout } = await execAsync(`tasklist /FI "IMAGENAME eq ${name}" /FO CSV /NH`);
+      return stdout.toLowerCase().includes(name.toLowerCase());
     } catch {
       return false;
     }
@@ -273,30 +265,22 @@ export class TraeworkService {
   }
 
   /**
-   * Close all running Trae processes (excluding our own app).
-   * Returns the number of processes that were terminated.
+   * Close the PREFERRED Trae product's processes only.
+   * Trae CN / international Trae sessions are independent IDEs - killing them
+   * during an account switch (and not restoring them) destroys the user's
+   * work, so they must never be terminated here.
+   * Returns the number of taskkill commands that found processes.
    */
   async closeTraework(): Promise<number> {
-    const processNames = getTraeStoragePaths().map(p => p.processName);
-    let killed = 0;
-    for (const name of processNames) {
-      try {
-        const { stdout } = await execAsync(`taskkill /IM "${name}" /F /T`);
-        logger.info(`Closed Trae process ${name}: ${stdout.trim()}`);
-        killed++;
-      } catch {
-        // No process with that name running - ignore
-      }
-    }
-    // Also kill any other Trae*.exe processes (except our own app)
+    const name = findPreferredTraeStorage()?.processName ?? 'TRAE SOLO CN.exe';
     try {
-      const { stdout } = await execAsync('taskkill /IM "Trae.exe" /F /T');
-      logger.info(`Closed Trae process Trae.exe: ${stdout.trim()}`);
-      killed++;
+      const { stdout } = await execAsync(`taskkill /IM "${name}" /F /T`);
+      logger.info(`Closed Trae process ${name}: ${stdout.trim()}`);
+      return 1;
     } catch {
-      // ignore
+      // No process with that name running - ignore
+      return 0;
     }
-    return killed;
   }
 
   /**
