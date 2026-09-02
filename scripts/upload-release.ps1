@@ -21,8 +21,13 @@ foreach ($asset in $assets) {
   }
 }
 
+$previousErrorAction = $ErrorActionPreference
+$ErrorActionPreference = 'SilentlyContinue'
 gh release view $tag --repo $repo *> $null
-if ($LASTEXITCODE -ne 0) {
+$releaseExists = $LASTEXITCODE -eq 0
+$ErrorActionPreference = $previousErrorAction
+
+if (-not $releaseExists) {
   Write-Host "Creating draft release $tag..."
   gh release create $tag --repo $repo --title $tag --draft --generate-notes
   if ($LASTEXITCODE -ne 0) { throw 'Failed to create draft release.' }
