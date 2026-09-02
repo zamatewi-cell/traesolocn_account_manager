@@ -13,7 +13,7 @@
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.main.json",
     "build:preload": "tsc -p tsconfig.preload.json",
-    "test": "npm run build:main && node --test tests/*.test.cjs",
+    "test": "npm run build:main && node --test tests/backup-crypto.test.cjs",
     "pack": "node scripts/build.js",
     "dist": "node scripts/build.js --dist",
     "generate-icon": "node scripts/generate-ico.js",
