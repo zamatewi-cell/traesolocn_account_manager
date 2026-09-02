@@ -53,6 +53,8 @@ function createSchema(db: Database.Database): void {
       avatar_url TEXT,
       phone TEXT,
       token_encrypted TEXT NOT NULL,
+      refresh_token_encrypted BLOB,
+      -- Legacy migration source only; new writes keep this NULL.
       refresh_token TEXT,
       host TEXT NOT NULL DEFAULT 'https://api.trae.cn',
       source TEXT NOT NULL DEFAULT 'oauth',
@@ -112,6 +114,7 @@ function runMigrations(db: Database.Database): void {
   const migrations: Array<{ col: string; def: string }> = [
     { col: 'phone', def: 'TEXT' },
     { col: 'refresh_token', def: 'TEXT' },
+    { col: 'refresh_token_encrypted', def: 'BLOB' },
     { col: 'host', def: "TEXT NOT NULL DEFAULT 'https://api.trae.cn'" },
     { col: 'install_name', def: 'TEXT' },
     { col: 'checkin_credits', def: 'INTEGER NOT NULL DEFAULT 0' },

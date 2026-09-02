@@ -11,7 +11,7 @@ TRAE SOLO CN（Traework）多账号管理工具。在一处管理多个 Trae 账
   - OAuth 登录捕获：弹出 Trae 登录页，双通道（storage.json 监听 + 请求头/localStorage 捕获）自动抓取 token
   - Token 导入：粘贴 `x-cloudide-token` 直接导入
   - 本地导入：扫描本机 Trae 的 storage.json，一键导入当前登录账号
-  - JSON 批量导入 / 导出：账号数据加密导出为 JSON，可迁移到其他机器
+  - JSON 批量导入 / 导出：账号数据使用备份密码加密为 JSON，可迁移到其他机器
 - **数据刷新**：并行拉取用户信息、权益包（额度与进度条、到期时间）、付费状态、签到状态；用量百分比按绿→黄→红渐进着色
 - **自动修复**：启动时自动从本地 storage.json 恢复账号 token，修复旧版本写入的无法解密的 v10 格式 token
 
@@ -81,8 +81,8 @@ Get-Process -Name 'Trae Account Manager' -ErrorAction SilentlyContinue | Stop-Pr
 | 应用配置 | `%APPDATA%\trae-account-manager\config.json` |
 
 - token 与 auth blob 使用 **Windows DPAPI**（Electron `safeStorage`）加密后入库，仅本机当前用户可解密
-- Trae 的 `storage.json` 使用自定义 **AES-128-CBC + SHA-512 HMAC** 方案解密（非 safeStorage 格式）
-- 导出的 JSON 为加密格式，不含明文 token
+- Trae 的 `storage.json` 使用自定义 **AES-128-CBC + SHA-512 完整性校验** 方案解密（非 safeStorage 格式）
+- 导出的 JSON 使用 PBKDF2-SHA256（210,000 次迭代）派生密钥，并通过 AES-256-GCM 加密；文件不含明文 token，备份密码无法找回
 
 ## 技术架构
 

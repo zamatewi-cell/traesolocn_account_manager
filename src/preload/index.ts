@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC_CHANNELS } from '../shared/types';
-import type { Account, CheckinResult, BatchCheckinResult, LocalAccountInfo, IpcResponse, Language, AppSettings, UsageRecord, UpdateInfo, UpdateProgress, AutoCheckinStatus, AutoCheckinRecord } from '../shared/types';
+import type { AccountView, CheckinResult, BatchCheckinResult, LocalAccountView, IpcResponse, Language, AppSettings, UsageRecord, UpdateInfo, UpdateProgress, AutoCheckinStatus, AutoCheckinRecord } from '../shared/types';
 
 // Wrapper function for IPC calls with proper typing
 async function ipcInvoke<T = unknown>(channel: string, ...args: unknown[]): Promise<IpcResponse<T>> {
@@ -22,20 +22,21 @@ const electronAPI = {
 
   // Account operations
   accounts: {
-    list: (): Promise<IpcResponse<Account[]>> => ipcInvoke<Account[]>(IPC_CHANNELS.ACCOUNT_LIST),
-    addByOAuth: (): Promise<IpcResponse<Account>> => ipcInvoke<Account>(IPC_CHANNELS.ACCOUNT_ADD_OAUTH),
-    addByToken: (token: string): Promise<IpcResponse<Account>> => 
-      ipcInvoke<Account>(IPC_CHANNELS.ACCOUNT_ADD_TOKEN, { token }),
-    addFromLocal: (localInfo?: LocalAccountInfo): Promise<IpcResponse<Account>> => 
-      ipcInvoke<Account>(IPC_CHANNELS.ACCOUNT_ADD_LOCAL, { localInfo }),
-    importFromJson: (): Promise<IpcResponse<Account[]>> => ipcInvoke<Account[]>(IPC_CHANNELS.ACCOUNT_IMPORT_JSON),
-    export: (ids?: number[]): Promise<IpcResponse<{ filePath: string }>> => 
-      ipcInvoke<{ filePath: string }>(IPC_CHANNELS.ACCOUNT_EXPORT, { ids }),
+    list: (): Promise<IpcResponse<AccountView[]>> => ipcInvoke<AccountView[]>(IPC_CHANNELS.ACCOUNT_LIST),
+    addByOAuth: (): Promise<IpcResponse<AccountView>> => ipcInvoke<AccountView>(IPC_CHANNELS.ACCOUNT_ADD_OAUTH),
+    addByToken: (token: string): Promise<IpcResponse<AccountView>> =>
+      ipcInvoke<AccountView>(IPC_CHANNELS.ACCOUNT_ADD_TOKEN, { token }),
+    addFromLocal: (localInfo?: LocalAccountView): Promise<IpcResponse<AccountView>> =>
+      ipcInvoke<AccountView>(IPC_CHANNELS.ACCOUNT_ADD_LOCAL, { localInfo }),
+    importFromJson: (password?: string): Promise<IpcResponse<AccountView[]>> =>
+      ipcInvoke<AccountView[]>(IPC_CHANNELS.ACCOUNT_IMPORT_JSON, { password }),
+    export: (ids?: number[], password?: string): Promise<IpcResponse<{ filePath: string }>> =>
+      ipcInvoke<{ filePath: string }>(IPC_CHANNELS.ACCOUNT_EXPORT, { ids, password }),
     delete: (id: number): Promise<IpcResponse> => ipcInvoke(IPC_CHANNELS.ACCOUNT_DELETE, { id }),
-    switch: (id: number, options?: { autoCloseTrae?: boolean; autoRestartTrae?: boolean; traeExePath?: string }): Promise<IpcResponse<Account>> => 
-      ipcInvoke<Account>(IPC_CHANNELS.ACCOUNT_SWITCH, { id, ...options }),
-    refresh: (id: number): Promise<IpcResponse<Account>> => ipcInvoke<Account>(IPC_CHANNELS.ACCOUNT_REFRESH, { id }),
-    refreshAll: (): Promise<IpcResponse<Account[]>> => ipcInvoke<Account[]>(IPC_CHANNELS.ACCOUNT_REFRESH_ALL),
+    switch: (id: number, options?: { autoCloseTrae?: boolean; autoRestartTrae?: boolean; traeExePath?: string }): Promise<IpcResponse<AccountView>> =>
+      ipcInvoke<AccountView>(IPC_CHANNELS.ACCOUNT_SWITCH, { id, ...options }),
+    refresh: (id: number): Promise<IpcResponse<AccountView>> => ipcInvoke<AccountView>(IPC_CHANNELS.ACCOUNT_REFRESH, { id }),
+    refreshAll: (): Promise<IpcResponse<AccountView[]>> => ipcInvoke<AccountView[]>(IPC_CHANNELS.ACCOUNT_REFRESH_ALL),
     onAccountsUpdated: (callback: () => void): (() => void) => {
       const listener = () => callback();
       ipcRenderer.on(IPC_CHANNELS.ACCOUNTS_UPDATED, listener);
@@ -61,10 +62,10 @@ const electronAPI = {
 
   // Storage/app operations
   storage: {
-    detectLocalAccount: (): Promise<IpcResponse<LocalAccountInfo>> => 
-      ipcInvoke<LocalAccountInfo>(IPC_CHANNELS.STORAGE_DETECT_LOCAL),
-    detectAllLocalAccounts: (): Promise<IpcResponse<LocalAccountInfo[]>> => 
-      ipcInvoke<LocalAccountInfo[]>(IPC_CHANNELS.STORAGE_DETECT_ALL_LOCAL),
+    detectLocalAccount: (): Promise<IpcResponse<LocalAccountView>> =>
+      ipcInvoke<LocalAccountView>(IPC_CHANNELS.STORAGE_DETECT_LOCAL),
+    detectAllLocalAccounts: (): Promise<IpcResponse<LocalAccountView[]>> =>
+      ipcInvoke<LocalAccountView[]>(IPC_CHANNELS.STORAGE_DETECT_ALL_LOCAL),
     isTraeworkRunning: (): Promise<IpcResponse<{ running: boolean }>> => 
       ipcInvoke<{ running: boolean }>(IPC_CHANNELS.APP_CHECK_TRAEWORK_RUNNING),
   },

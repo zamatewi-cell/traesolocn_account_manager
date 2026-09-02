@@ -5,7 +5,7 @@ import { useAccounts } from '../hooks/useAccounts';
 import { useToast } from '../contexts/ToastContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { cn, formatNumber } from '../lib/utils';
-import type { Account } from '../../shared/types';
+import type { AccountView } from '../../shared/types';
 
 interface AccountListPageProps {
   onOpenAddDialog?: () => void;
@@ -14,6 +14,8 @@ interface AccountListPageProps {
 export function AccountListPage({ onOpenAddDialog }: AccountListPageProps) {
   const { t } = useLanguage();
   const [selectedForBatch, setSelectedForBatch] = useState<Set<number>>(new Set());
+  const [showExportDialog, setShowExportDialog] = useState(false);
+  const [exportPassword, setExportPassword] = useState('');
   const {
     accounts,
     loading,
@@ -56,6 +58,17 @@ export function AccountListPage({ onOpenAddDialog }: AccountListPageProps) {
     }
     await checkinBatch(Array.from(selectedForBatch));
     setSelectedForBatch(new Set());
+  };
+
+  const handleExport = async () => {
+    if (exportPassword.length < 8) {
+      showToast(t.settings.backupPasswordRequired, 'warning');
+      return;
+    }
+    if (await exportAccounts(undefined, exportPassword)) {
+      setExportPassword('');
+      setShowExportDialog(false);
+    }
   };
 
   const totalCredits = accounts.reduce((sum, a) => sum + a.creditsBalance, 0);
@@ -139,7 +152,7 @@ export function AccountListPage({ onOpenAddDialog }: AccountListPageProps) {
             {t.common.refresh}
           </button>
           <button
-            onClick={() => exportAccounts()}
+            onClick={() => setShowExportDialog(true)}
             className="btn btn-secondary flex items-center gap-2"
           >
             <Download className="w-4 h-4" />
@@ -226,7 +239,7 @@ export function AccountListPage({ onOpenAddDialog }: AccountListPageProps) {
               {selectedForBatch.size === accounts.length ? t.accounts.deselectedAll : t.accounts.selectAllAccounts}
             </button>
 
-            {accounts.map((account: Account, index: number) => (
+            {accounts.map((account: AccountView, index: number) => (
               <div key={account.id} className="flex items-start gap-3 animate-fade-in" style={{ animationDelay: `${index * 50}ms` }}>
                 <button
                   onClick={() => toggleSelect(account.id)}
@@ -258,6 +271,37 @@ export function AccountListPage({ onOpenAddDialog }: AccountListPageProps) {
           </div>
         )}
       </div>
+
+      {showExportDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setShowExportDialog(false)} />
+          <div className="relative w-full max-w-md card space-y-4">
+            <div>
+              <h3 className="text-lg font-semibold text-text-primary">{t.settings.exportAccounts}</h3>
+              <p className="text-sm text-text-tertiary mt-1">{t.settings.exportDescription}</p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-text-primary mb-2" htmlFor="account-list-export-password">
+                {t.settings.backupPassword}
+              </label>
+              <input
+                id="account-list-export-password"
+                type="password"
+                value={exportPassword}
+                onChange={(event) => setExportPassword(event.target.value)}
+                placeholder={t.settings.backupPasswordPlaceholder}
+                autoComplete="new-password"
+                className="input w-full"
+              />
+              <p className="text-xs text-text-muted mt-2">{t.settings.backupPasswordHint}</p>
+            </div>
+            <div className="flex justify-end gap-3">
+              <button className="btn btn-ghost" onClick={() => setShowExportDialog(false)}>{t.common.cancel}</button>
+              <button className="btn btn-primary" onClick={handleExport}>{t.common.export}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

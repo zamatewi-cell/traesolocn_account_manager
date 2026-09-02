@@ -29,6 +29,11 @@ export interface Account {
   lastRefreshedAt: string | null;
 }
 
+/** Account data safe to expose to the renderer (no reusable credentials). */
+export type AccountView = Omit<Account, 'token' | 'refreshToken'> & {
+  hasRefreshToken: boolean;
+};
+
 // Quota information for an entitlement
 export interface EntitlementQuota {
   total_quota: number;
@@ -137,6 +142,9 @@ export interface LocalAccountInfo {
   /** Complete decrypted auth blob straight from storage.json (all fields). */
   authBlob?: TraeAuthData;
 }
+
+/** Local-session metadata safe to display without exposing its credentials. */
+export type LocalAccountView = Omit<LocalAccountInfo, 'token' | 'refreshToken' | 'authBlob'>;
 
 // One account entry in a v2 export file (snake_case, aligned with the
 // Cockpit-style reference format so exported files carry full credentials)
@@ -256,7 +264,7 @@ export interface AutoCheckinStatus {
   end: string;
   /** 下次计划触发时间（本地 ISO），未启用或无法计算时为 null */
   nextRunAt: string | null;
-  /** 今天是否已有一次自动签到记录 */
+  /** 今天是否已成功处理过账号，或已达到自动重试上限 */
   hasRunToday: boolean;
 }
 
@@ -265,6 +273,8 @@ export interface UpdateAsset {
   name: string;
   url: string;
   size: number;
+  /** Base64-encoded SHA-512 from electron-builder's latest.yml. */
+  sha512: string;
 }
 
 // Result of a GitHub Releases update check

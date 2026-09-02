@@ -170,6 +170,14 @@ export class AutoCheckinService {
   private planNextRun(now: Date, start: string, end: string): Date | null {
     if (this.hasRunToday()) return null;
 
+    const failedAttempts = this.failedAutoRunsToday();
+    if (failedAttempts > 0) {
+      // Back off after a completely failed run instead of immediately
+      // hammering the same unavailable network/API. hasRunToday caps this at
+      // three automatic attempts per local day.
+      return new Date(now.getTime() + 15 * 60 * 1000);
+    }
+
     const [sh, sm] = start.split(':').map(Number);
     const [eh, em] = end.split(':').map(Number);
 
@@ -211,9 +219,27 @@ export class AutoCheckinService {
   private hasRunToday(): boolean {
     const db = getDatabase();
     const row = db.prepare(
-      "SELECT COUNT(*) AS n FROM auto_checkin_records WHERE trigger_type = 'auto' AND date(run_at) = date('now', 'localtime')"
+      `SELECT COUNT(*) AS n,
+              COALESCE(SUM(success_count + already_count), 0) AS completed
+       FROM auto_checkin_records
+       WHERE trigger_type = 'auto' AND date(run_at) = date('now', 'localtime')`
+    ).get() as { n: number; completed: number };
+    // A run where every account failed (for example during a network outage)
+    // is not considered complete. Retry it, but cap attempts so a persistent
+    // server error cannot create an endless loop.
+    return row.completed > 0 || row.n >= 3;
+  }
+
+  private failedAutoRunsToday(): number {
+    const db = getDatabase();
+    const row = db.prepare(
+      `SELECT COUNT(*) AS n
+       FROM auto_checkin_records
+       WHERE trigger_type = 'auto'
+         AND date(run_at) = date('now', 'localtime')
+         AND success_count = 0 AND already_count = 0`
     ).get() as { n: number };
-    return row.n > 0;
+    return row.n;
   }
 
   private async execute(trigger: 'auto' | 'manual'): Promise<AutoCheckinRecord> {

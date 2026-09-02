@@ -2,13 +2,14 @@ import { app, net, shell } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
+import { createHash } from 'crypto';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import type { ReadableStream as NodeWebReadableStream } from 'stream/web';
 import { logger } from '../utils/logger';
 import { getMainWindow } from '../window';
 import { IPC_CHANNELS } from '../../shared/types';
-import type { UpdateInfo, UpdateProgress } from '../../shared/types';
+import type { UpdateAsset, UpdateInfo, UpdateProgress } from '../../shared/types';
 
 const GITHUB_REPO = 'zamatewi-cell/traesolocn_account_manager';
 const RELEASES_LATEST_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
@@ -61,6 +62,9 @@ interface GithubRelease {
 }
 
 export class UpdateService {
+  private approvedAsset: UpdateAsset | null = null;
+  private downloadedInstallerPath: string | null = null;
+
   /**
    * Check GitHub Releases for a newer version than the running app.
    * Falls back to jsDelivr-mirrored package.json when GitHub is unreachable
@@ -68,14 +72,20 @@ export class UpdateService {
    */
   async checkForUpdates(): Promise<UpdateInfo> {
     const currentVersion = app.getVersion();
+    this.approvedAsset = null;
+    this.downloadedInstallerPath = null;
 
     try {
-      return await this.checkViaGithubApi(currentVersion);
+      const info = await this.checkViaGithubApi(currentVersion);
+      this.approvedAsset = info.updateAvailable ? info.asset : null;
+      return info;
     } catch (err) {
       logger.warn('GitHub update check failed, trying jsDelivr mirror:', (err as Error).message);
     }
 
-    return this.checkViaCdnMirror(currentVersion);
+    const info = await this.checkViaCdnMirror(currentVersion);
+    this.approvedAsset = info.updateAvailable ? info.asset : null;
+    return info;
   }
 
   private async checkViaGithubApi(currentVersion: string): Promise<UpdateInfo> {
@@ -95,9 +105,24 @@ export class UpdateService {
     const release = (await res.json()) as GithubRelease;
 
     const latestVersion = normalizeVersion(release.tag_name || '');
-    const installerAsset = (release.assets || []).find(a =>
-      a.name && a.name.toLowerCase().endsWith('.exe')
-    );
+    const expectedName = installerAssetName(latestVersion);
+    const installerAsset = (release.assets || []).find(a => a.name === expectedName);
+    const manifestAsset = (release.assets || []).find(a => a.name === 'latest.yml');
+    let verifiedAsset: UpdateAsset | null = null;
+
+    if (compareVersions(latestVersion, currentVersion) > 0 && installerAsset && manifestAsset) {
+      try {
+        const manifest = await this.fetchReleaseManifest(manifestAsset.browser_download_url, expectedName);
+        verifiedAsset = {
+          name: installerAsset.name,
+          url: installerAsset.browser_download_url,
+          size: installerAsset.size || manifest.size,
+          sha512: manifest.sha512,
+        };
+      } catch (err) {
+        logger.warn('Release installer has no usable checksum manifest; automatic download disabled:', (err as Error).message);
+      }
+    }
 
     const info: UpdateInfo = {
       updateAvailable: compareVersions(latestVersion, currentVersion) > 0,
@@ -105,9 +130,7 @@ export class UpdateService {
       latestVersion,
       releaseUrl: release.html_url || `https://github.com/${GITHUB_REPO}/releases`,
       releaseNotes: release.body || '',
-      asset: installerAsset
-        ? { name: installerAsset.name, url: installerAsset.browser_download_url, size: installerAsset.size }
-        : null,
+      asset: verifiedAsset,
     };
     logger.info(
       `Update check: current=${currentVersion} latest=${latestVersion} available=${info.updateAvailable}`
@@ -140,17 +163,31 @@ export class UpdateService {
           throw new Error('镜像返回的版本号为空');
         }
         const name = installerAssetName(latestVersion);
+        let verifiedAsset: UpdateAsset | null = null;
+        if (compareVersions(latestVersion, currentVersion) > 0) {
+          const releaseBase = `https://github.com/${GITHUB_REPO}/releases/download/v${latestVersion}`;
+          try {
+            const manifest = await this.fetchReleaseManifest(`${releaseBase}/latest.yml`, name);
+            verifiedAsset = {
+              name,
+              url: `${releaseBase}/${name}`,
+              size: manifest.size,
+              sha512: manifest.sha512,
+            };
+          } catch (err) {
+            logger.warn(`Release v${latestVersion} has no usable latest.yml; automatic download disabled:`, (err as Error).message);
+          }
+        }
         const info: UpdateInfo = {
-          updateAvailable: compareVersions(latestVersion, currentVersion) > 0,
+          // The CDN mirrors the source branch, which may be bumped before a
+          // release exists. Only a matching checksum manifest confirms
+          // that this version is actually publishable to users.
+          updateAvailable: compareVersions(latestVersion, currentVersion) > 0 && verifiedAsset !== null,
           currentVersion,
           latestVersion,
           releaseUrl: `https://github.com/${GITHUB_REPO}/releases/tag/v${latestVersion}`,
           releaseNotes: '',
-          asset: {
-            name,
-            url: `https://github.com/${GITHUB_REPO}/releases/download/v${latestVersion}/${name}`,
-            size: 0,
-          },
+          asset: verifiedAsset,
         };
         logger.info(
           `Update check via ${new URL(cdnUrl).host}: current=${currentVersion} latest=${latestVersion} available=${info.updateAvailable}`
@@ -164,6 +201,30 @@ export class UpdateService {
     throw new Error(`检查更新失败（GitHub 与镜像均不可达）: ${lastError}`);
   }
 
+  private async fetchReleaseManifest(
+    manifestUrl: string,
+    expectedInstallerName: string
+  ): Promise<{ sha512: string; size: number }> {
+    const separator = manifestUrl.includes('?') ? '&' : '?';
+    const res = await net.fetch(`${manifestUrl}${separator}_=${Date.now()}`, {
+      headers: { 'User-Agent': USER_AGENT },
+      signal: AbortSignal.timeout(15000),
+      cache: 'no-store',
+    });
+    if (!res.ok) throw new Error(`latest.yml HTTP ${res.status}`);
+    const text = await res.text();
+    const pathMatch = text.match(/^path:\s*['"]?([^'"\r\n]+)['"]?\s*$/m);
+    const shaMatch = text.match(/^sha512:\s*([^\s]+)\s*$/m);
+    const sizeMatch = text.match(/^\s+size:\s*(\d+)\s*$/m);
+    if (!pathMatch || pathMatch[1].trim() !== expectedInstallerName) {
+      throw new Error('latest.yml 安装包名称不匹配');
+    }
+    if (!shaMatch || !/^[A-Za-z0-9+/]+={0,2}$/.test(shaMatch[1])) {
+      throw new Error('latest.yml 缺少有效 SHA-512');
+    }
+    return { sha512: shaMatch[1], size: Number(sizeMatch?.[1] || 0) };
+  }
+
   /**
    * Download the installer asset to the temp directory, reporting progress to
    * the renderer via UPDATE_DOWNLOAD_PROGRESS events.
@@ -171,6 +232,18 @@ export class UpdateService {
    * Returns the local path of the downloaded installer.
    */
   async downloadUpdate(assetUrl: string, assetName: string): Promise<string> {
+    const approved = this.approvedAsset;
+    if (!approved || approved.url !== assetUrl || approved.name !== assetName) {
+      throw new Error('更新信息已失效，请重新检查更新');
+    }
+    if (path.basename(assetName) !== assetName || !/^Trae-Account-Manager-Setup-[0-9]+(?:\.[0-9]+){2}\.exe$/.test(assetName)) {
+      throw new Error('安装包文件名无效');
+    }
+    const expectedPrefix = `https://github.com/${GITHUB_REPO}/releases/download/`;
+    if (!assetUrl.startsWith(expectedPrefix)) {
+      throw new Error('安装包来源无效');
+    }
+
     const targetDir = path.join(app.getPath('temp'), 'trae-account-manager-update');
     fs.mkdirSync(targetDir, { recursive: true });
     const targetPath = path.join(targetDir, assetName);
@@ -179,10 +252,12 @@ export class UpdateService {
     for (const mirror of DOWNLOAD_MIRROR_PREFIXES) {
       const url = `${mirror}${assetUrl}`;
       try {
-        await this.downloadFrom(url, targetPath);
+        await this.downloadFrom(url, targetPath, approved);
+        this.downloadedInstallerPath = path.resolve(targetPath);
         logger.info(`Update installer downloaded from ${mirror || 'direct'}: ${targetPath}`);
         return targetPath;
       } catch (err) {
+        try { fs.unlinkSync(targetPath); } catch { /* no partial file */ }
         lastError = (err as Error).message;
         logger.warn(`Update download from ${url} failed:`, lastError);
       }
@@ -190,7 +265,7 @@ export class UpdateService {
     throw new Error(`下载失败（直连与镜像均不可用）: ${lastError}`);
   }
 
-  private async downloadFrom(url: string, targetPath: string): Promise<void> {
+  private async downloadFrom(url: string, targetPath: string, expected: UpdateAsset): Promise<void> {
     const res = await net.fetch(url, {
       headers: { 'User-Agent': USER_AGENT },
       signal: AbortSignal.timeout(10 * 60 * 1000),
@@ -234,6 +309,23 @@ export class UpdateService {
     if (received < 1024 * 1024) {
       throw new Error(`下载数据过小 (${received} bytes)，疑似错误页面`);
     }
+    if (expected.size > 0 && received !== expected.size) {
+      throw new Error(`安装包大小不匹配（期望 ${expected.size}，实际 ${received}）`);
+    }
+    const digest = await this.sha512File(targetPath);
+    if (digest !== expected.sha512) {
+      throw new Error('安装包 SHA-512 校验失败');
+    }
+  }
+
+  private sha512File(filePath: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const hash = createHash('sha512');
+      const input = fs.createReadStream(filePath);
+      input.on('data', chunk => hash.update(chunk));
+      input.on('error', reject);
+      input.on('end', () => resolve(hash.digest('base64')));
+    });
   }
 
   /**
@@ -241,12 +333,19 @@ export class UpdateService {
    * overwrite its files.
    */
   async installUpdate(installerPath: string): Promise<boolean> {
-    if (!installerPath || !fs.existsSync(installerPath)) {
+    const resolvedPath = installerPath ? path.resolve(installerPath) : '';
+    const targetDir = path.resolve(path.join(app.getPath('temp'), 'trae-account-manager-update'));
+    if (
+      !resolvedPath ||
+      resolvedPath !== this.downloadedInstallerPath ||
+      path.dirname(resolvedPath) !== targetDir ||
+      !fs.existsSync(resolvedPath)
+    ) {
       throw new Error('安装包不存在或已被删除');
     }
-    const child = spawn(installerPath, [], { detached: true, stdio: 'ignore' });
+    const child = spawn(resolvedPath, [], { detached: true, stdio: 'ignore' });
     child.unref();
-    logger.info(`Update installer launched, quitting app: ${installerPath}`);
+    logger.info(`Update installer launched, quitting app: ${resolvedPath}`);
     // Give the installer a moment to come up before we exit
     setTimeout(() => app.quit(), 1000);
     return true;

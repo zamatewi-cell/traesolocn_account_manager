@@ -8,9 +8,19 @@ import { getAutoCheckinService } from '../services/auto-checkin.service';
 import { IPC_CHANNELS } from '../../shared/types';
 import { logger } from '../utils/logger';
 import { store } from '../utils/store';
-import type { IpcResponse, Language, LocalAccountInfo, AppSettings } from '../../shared/types';
+import type { Account, AccountView, IpcResponse, Language, LocalAccountInfo, LocalAccountView, AppSettings } from '../../shared/types';
 
 type AnyResponse = IpcResponse<any>;
+
+function toAccountView(account: Account): AccountView {
+  const { token: _token, refreshToken, ...safe } = account;
+  return { ...safe, hasRefreshToken: !!refreshToken };
+}
+
+function toLocalAccountView(account: LocalAccountInfo): LocalAccountView {
+  const { token: _token, refreshToken: _refreshToken, authBlob: _authBlob, ...safe } = account;
+  return safe;
+}
 
 // Default app settings
 const DEFAULT_SETTINGS: AppSettings = {
@@ -44,7 +54,7 @@ export function registerAccountIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.ACCOUNT_LIST, async (): Promise<AnyResponse> => {
     try {
       const accounts = accountService.getAllAccounts();
-      return { success: true, data: accounts };
+      return { success: true, data: accounts.map(toAccountView) };
     } catch (err) {
       logger.error('Failed to get accounts:', err);
       return { success: false, error: (err as Error).message };
@@ -61,7 +71,7 @@ export function registerAccountIpcHandlers(): void {
         authResult.refreshToken,
         authResult.expiredAt
       );
-      return { success: true, data: account };
+      return { success: true, data: toAccountView(account) };
     } catch (err) {
       logger.error('OAuth add failed:', err);
       return { success: false, error: (err as Error).message };
@@ -72,7 +82,7 @@ export function registerAccountIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.ACCOUNT_ADD_TOKEN, async (_event, { token }: { token: string }): Promise<AnyResponse> => {
     try {
       const account = await accountService.addAccount(token.trim(), 'token_import');
-      return { success: true, data: account };
+      return { success: true, data: toAccountView(account) };
     } catch (err) {
       logger.error('Token add failed:', err);
       return { success: false, error: (err as Error).message };
@@ -80,11 +90,18 @@ export function registerAccountIpcHandlers(): void {
   });
 
   // Add/import a specific local account
-  ipcMain.handle(IPC_CHANNELS.ACCOUNT_ADD_LOCAL, async (_event, { localInfo }: { localInfo?: LocalAccountInfo } = {}): Promise<AnyResponse> => {
+  ipcMain.handle(IPC_CHANNELS.ACCOUNT_ADD_LOCAL, async (_event, { localInfo }: { localInfo?: LocalAccountView } = {}): Promise<AnyResponse> => {
     try {
       let account;
-      if (localInfo && localInfo.token) {
-        account = await accountService.importLocalAccount(localInfo);
+      if (localInfo) {
+        // Re-read credentials in the trusted main process. Tokens and auth
+        // blobs never need to cross into the renderer merely for selection.
+        const detected = traeworkService.detectLocalAccounts().find(candidate =>
+          candidate.storagePath === localInfo.storagePath &&
+          (!localInfo.userId || candidate.userId === localInfo.userId)
+        );
+        if (!detected) throw new Error('所选本地账号已失效，请重新检测');
+        account = await accountService.importLocalAccount(detected);
       } else {
         // If no specific localInfo, import all detected local accounts
         const accounts = await accountService.importAllLocalAccounts();
@@ -94,7 +111,7 @@ export function registerAccountIpcHandlers(): void {
         // Return the first imported account
         account = accounts[0];
       }
-      return { success: true, data: account };
+      return { success: true, data: toAccountView(account) };
     } catch (err) {
       logger.error('Local import failed:', err);
       return { success: false, error: (err as Error).message };
@@ -102,7 +119,7 @@ export function registerAccountIpcHandlers(): void {
   });
 
   // Import from JSON file
-  ipcMain.handle(IPC_CHANNELS.ACCOUNT_IMPORT_JSON, async (): Promise<AnyResponse> => {
+  ipcMain.handle(IPC_CHANNELS.ACCOUNT_IMPORT_JSON, async (_event, { password }: { password?: string } = {}): Promise<AnyResponse> => {
     try {
       const result = await dialog.showOpenDialog({
         properties: ['openFile'],
@@ -110,11 +127,11 @@ export function registerAccountIpcHandlers(): void {
       });
 
       if (result.canceled || result.filePaths.length === 0) {
-        return { success: false, error: '未选择文件' };
+        return { success: false, error: 'CANCELLED' };
       }
 
-      const accounts = await accountService.importAccountsFromFile(result.filePaths[0]);
-      return { success: true, data: accounts };
+      const accounts = await accountService.importAccountsFromFile(result.filePaths[0], password);
+      return { success: true, data: accounts.map(toAccountView) };
     } catch (err) {
       logger.error('JSON import failed:', err);
       return { success: false, error: (err as Error).message };
@@ -122,7 +139,7 @@ export function registerAccountIpcHandlers(): void {
   });
 
   // Export accounts to JSON
-  ipcMain.handle(IPC_CHANNELS.ACCOUNT_EXPORT, async (_event, { ids }: { ids?: number[] } = {}): Promise<AnyResponse> => {
+  ipcMain.handle(IPC_CHANNELS.ACCOUNT_EXPORT, async (_event, { ids, password }: { ids?: number[]; password?: string } = {}): Promise<AnyResponse> => {
     try {
       const result = await dialog.showSaveDialog({
         filters: [{ name: 'JSON Files', extensions: ['json'] }],
@@ -130,10 +147,10 @@ export function registerAccountIpcHandlers(): void {
       });
 
       if (result.canceled || !result.filePath) {
-        return { success: false, error: '导出已取消' };
+        return { success: false, error: 'CANCELLED' };
       }
 
-      accountService.exportAccounts(ids, result.filePath);
+      accountService.exportAccounts(ids, result.filePath, password);
       return { success: true, data: { filePath: result.filePath } };
     } catch (err) {
       logger.error('Export failed:', err);
@@ -160,7 +177,7 @@ export function registerAccountIpcHandlers(): void {
         autoRestartTrae,
         traeExePath,
       });
-      return { success: true, data: account };
+      return { success: true, data: toAccountView(account) };
     } catch (err) {
       logger.error('Switch failed:', err);
       return { success: false, error: (err as Error).message };
@@ -171,7 +188,7 @@ export function registerAccountIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.ACCOUNT_REFRESH, async (_event, { id }: { id: number }): Promise<AnyResponse> => {
     try {
       const account = await accountService.refreshAccount(id);
-      return { success: true, data: account };
+      return { success: true, data: toAccountView(account) };
     } catch (err) {
       logger.error('Refresh failed:', err);
       return { success: false, error: (err as Error).message };
@@ -182,7 +199,7 @@ export function registerAccountIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.ACCOUNT_REFRESH_ALL, async (): Promise<AnyResponse> => {
     try {
       const accounts = await accountService.refreshAllAccounts();
-      return { success: true, data: accounts };
+      return { success: true, data: accounts.map(toAccountView) };
     } catch (err) {
       logger.error('Refresh all failed:', err);
       return { success: false, error: (err as Error).message };
@@ -193,7 +210,10 @@ export function registerAccountIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.CHECKIN_SINGLE, async (_event, { id }: { id: number }): Promise<AnyResponse> => {
     try {
       const result = await checkinService.checkinSingle(id);
-      return { success: result.success, data: result };
+      // IPC succeeded even when the server rejected the check-in. Keep the
+      // domain result in data so the renderer can show the precise reason
+      // (for example device-scoped code 9095) instead of a generic error.
+      return { success: true, data: result };
     } catch (err) {
       logger.error('Checkin failed:', err);
       return { success: false, error: (err as Error).message };
@@ -226,7 +246,7 @@ export function registerAccountIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.STORAGE_DETECT_LOCAL, async (): Promise<AnyResponse> => {
     try {
       const accounts = traeworkService.detectLocalAccounts();
-      return { success: true, data: accounts.length > 0 ? accounts[0] : { exists: false } };
+      return { success: true, data: accounts.length > 0 ? toLocalAccountView(accounts[0]) : { exists: false } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -236,7 +256,7 @@ export function registerAccountIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.STORAGE_DETECT_ALL_LOCAL, async (): Promise<AnyResponse> => {
     try {
       const accounts = traeworkService.detectLocalAccounts();
-      return { success: true, data: accounts };
+      return { success: true, data: accounts.map(toLocalAccountView) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

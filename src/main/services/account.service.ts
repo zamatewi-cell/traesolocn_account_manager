@@ -4,6 +4,7 @@ import { getApiService } from './api.service';
 import { getTraeworkService } from './traework.service';
 import { store } from '../utils/store';
 import { logger } from '../utils/logger';
+import { decryptExport, encryptExport, isEncryptedExportEnvelope } from '../utils/backup-crypto';
 import { findExistingTraeStorage, findPreferredTraeStorage } from '../utils/paths';
 import { createHash } from 'crypto';
 import { BrowserWindow } from 'electron';
@@ -19,6 +20,7 @@ interface AccountRow {
   avatar_url: string | null;
   phone: string | null;
   token_encrypted: Buffer;
+  refresh_token_encrypted: Buffer | null;
   refresh_token: string | null;
   host: string;
   source: string;
@@ -61,7 +63,7 @@ function isStoredDateToday(dateStr: string | null): boolean {
     && d.getDate() === now.getDate();
 }
 
-function rowToAccount(row: AccountRow, token: string): Account {
+function rowToAccount(row: AccountRow, token: string, refreshToken: string | null): Account {
   let entitlementPacks: EntitlementPack[] = [];
   if (row.entitlement_packs) {
     try {
@@ -84,7 +86,7 @@ function rowToAccount(row: AccountRow, token: string): Account {
     avatarUrl: row.avatar_url,
     phone: row.phone,
     token,
-    refreshToken: row.refresh_token,
+    refreshToken,
     host: row.host || 'https://api.trae.cn',
     isActive: row.is_active === 1,
     isCheckedIn: checkedInToday,
@@ -111,6 +113,46 @@ export class AccountService {
   private api = getApiService();
   private traework = getTraeworkService();
   private deviceId: string | null = null;
+
+  constructor() {
+    this.migrateLegacyRefreshTokens();
+  }
+
+  private encryptRefreshToken(refreshToken: string | null | undefined): Buffer | null {
+    return refreshToken ? this.crypto.encryptString(refreshToken) : null;
+  }
+
+  private decryptRefreshToken(row: AccountRow): string | null {
+    if (row.refresh_token_encrypted) {
+      return this.crypto.decryptString(row.refresh_token_encrypted);
+    }
+    return row.refresh_token || null;
+  }
+
+  private migrateLegacyRefreshTokens(): void {
+    if (!this.crypto.isEncryptionAvailable()) {
+      logger.error('DPAPI unavailable; legacy refresh tokens cannot be migrated safely');
+      return;
+    }
+    try {
+      const db = getDatabase();
+      const rows = db.prepare(
+        'SELECT id, refresh_token FROM accounts WHERE refresh_token IS NOT NULL AND refresh_token_encrypted IS NULL'
+      ).all() as Array<{ id: number; refresh_token: string }>;
+      if (rows.length === 0) return;
+      const update = db.prepare(
+        'UPDATE accounts SET refresh_token_encrypted = ?, refresh_token = NULL, updated_at = datetime(\'now\') WHERE id = ?'
+      );
+      db.transaction(() => {
+        for (const row of rows) {
+          update.run(this.crypto.encryptString(row.refresh_token), row.id);
+        }
+      })();
+      logger.info(`Migrated ${rows.length} legacy refresh token(s) to DPAPI storage`);
+    } catch (err) {
+      logger.warn('Legacy refresh-token migration failed:', (err as Error).message);
+    }
+  }
 
   /**
    * Get a stable device ID for checkin API calls.
@@ -163,7 +205,7 @@ export class AccountService {
 
     return rows.map(row => {
       const token = this.crypto.decryptString(row.token_encrypted);
-      return rowToAccount(row, token);
+      return rowToAccount(row, token, this.decryptRefreshToken(row));
     });
   }
 
@@ -179,7 +221,7 @@ export class AccountService {
     if (!row) return null;
 
     const token = this.crypto.decryptString(row.token_encrypted);
-    return rowToAccount(row, token);
+    return rowToAccount(row, token, this.decryptRefreshToken(row));
   }
 
   /**
@@ -194,7 +236,7 @@ export class AccountService {
     if (!row) return null;
 
     const token = this.crypto.decryptString(row.token_encrypted);
-    return rowToAccount(row, token);
+    return rowToAccount(row, token, this.decryptRefreshToken(row));
   }
 
   /**
@@ -207,12 +249,16 @@ export class AccountService {
     prefilledInfo?: Partial<Pick<Account, 'nickname' | 'email' | 'userId' | 'avatarUrl' | 'phone' | 'refreshToken' | 'host' | 'installName' | 'tokenExpiredAt'>>,
     authBlob?: TraeAuthData
   ): Promise<Account> {
+    if (!this.crypto.isValidToken(token)) {
+      throw new Error('Token 格式无效，请粘贴完整的 Trae JWT');
+    }
     const host = prefilledInfo?.host || 'https://api.trae.cn';
 
     // Try to get user info, entitlements, and pay status from API in parallel
     let userInfo: UserInfo | null = null;
     let payStatus: CreditsInfo = { balance: 0 };
     let entitlements: EntitlementPack[] = [];
+    let credentialsConfirmed = false;
 
     try {
       const [userInfoR, entitlementsR, payStatusR] = await Promise.all([
@@ -221,6 +267,9 @@ export class AccountService {
         this.api.getPayStatus(token, host).catch((): CreditsInfo => ({ balance: 0 })),
       ]);
       userInfo = userInfoR;
+      credentialsConfirmed = userInfoR !== null
+        || entitlementsR !== null
+        || payStatusR.identityStr !== undefined;
       // A failed entitlements query (null) must not be treated as "no packs"
       // here either - at add-time we simply show what we have and let the
       // next refresh fill in the rest.
@@ -228,6 +277,10 @@ export class AccountService {
       payStatus = payStatusR;
     } catch (err) {
       logger.warn('Failed to fetch account info from API during add:', (err as Error).message);
+    }
+
+    if (source === 'token_import' && !credentialsConfirmed) {
+      throw new Error('无法验证 Token：凭据可能无效或网络不可用，请检查后重试');
     }
 
     // Merge user info - prefer API data, then prefilled, then fallback
@@ -265,11 +318,11 @@ export class AccountService {
     const result = db.prepare(`
       INSERT INTO accounts (
         nickname, email, user_id, avatar_url, phone,
-        token_encrypted, refresh_token, host, source, install_name,
+        token_encrypted, refresh_token_encrypted, refresh_token, host, source, install_name,
         credits_balance, pay_status, pay_identity_str, entitlement_packs, token_expired_at,
         auth_blob_encrypted
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       nickname,
       email,
@@ -277,7 +330,8 @@ export class AccountService {
       avatarUrl,
       phone,
       encryptedToken,
-      prefilledInfo?.refreshToken || null,
+      this.encryptRefreshToken(prefilledInfo?.refreshToken),
+      null,
       host,
       source,
       prefilledInfo?.installName || null,
@@ -402,7 +456,9 @@ export class AccountService {
           : null;
         db.prepare(`
           UPDATE accounts
-          SET token_encrypted = ?, refresh_token = COALESCE(?, refresh_token),
+          SET token_encrypted = ?,
+              refresh_token_encrypted = COALESCE(?, refresh_token_encrypted),
+              refresh_token = NULL,
               token_expired_at = COALESCE(?, token_expired_at),
               host = ?, nickname = COALESCE(?, nickname), email = COALESCE(?, email),
               avatar_url = COALESCE(?, avatar_url),
@@ -411,7 +467,7 @@ export class AccountService {
           WHERE id = ?
         `).run(
           encryptedToken,
-          local.refreshToken || null,
+          this.encryptRefreshToken(local.refreshToken),
           local.expiredAt || null,
           local.host || match.host,
           local.nickname || null,
@@ -471,11 +527,13 @@ export class AccountService {
         const encryptedToken = this.crypto.encryptString(blob.token);
         const encryptedBlob = this.crypto.encryptString(JSON.stringify(blob));
         db.prepare(`UPDATE accounts
-          SET token_encrypted = ?, refresh_token = COALESCE(?, refresh_token),
+          SET token_encrypted = ?,
+              refresh_token_encrypted = COALESCE(?, refresh_token_encrypted),
+              refresh_token = NULL,
               token_expired_at = COALESCE(?, token_expired_at), auth_blob_encrypted = ?,
               updated_at = datetime('now')
           WHERE id = ?`)
-          .run(encryptedToken, blob.refreshToken || null, blob.expiredAt || null, encryptedBlob, row.id);
+          .run(encryptedToken, this.encryptRefreshToken(blob.refreshToken), blob.expiredAt || null, encryptedBlob, row.id);
         logger.warn(
           `[Recover] Restored credentials for account ${row.id} from its auth blob (stored token belonged to user ${tokenUserId})`
         );
@@ -674,8 +732,8 @@ export class AccountService {
       values.push(this.crypto.encryptString(JSON.stringify(authBlob)));
     }
     if (extraInfo?.refreshToken !== undefined) {
-      updates.push('refresh_token = ?');
-      values.push(extraInfo.refreshToken);
+      updates.push('refresh_token_encrypted = ?', 'refresh_token = NULL');
+      values.push(this.encryptRefreshToken(extraInfo.refreshToken));
     }
     if (extraInfo?.host !== undefined) {
       updates.push('host = ?');
@@ -724,10 +782,12 @@ export class AccountService {
       const encryptedToken = this.crypto.encryptString(token);
       db.prepare(`
         UPDATE accounts
-        SET token_encrypted = ?, refresh_token = COALESCE(?, refresh_token),
+        SET token_encrypted = ?,
+            refresh_token_encrypted = COALESCE(?, refresh_token_encrypted),
+            refresh_token = NULL,
             token_expired_at = COALESCE(?, token_expired_at), updated_at = datetime('now')
         WHERE id = ?
-      `).run(encryptedToken, refreshToken || null, expiredAt || null, id);
+      `).run(encryptedToken, this.encryptRefreshToken(refreshToken), expiredAt || null, id);
     } catch (err) {
       logger.warn(`Failed to persist token for account ${id}:`, (err as Error).message);
     }
@@ -1045,7 +1105,7 @@ export class AccountService {
     if (!row) return null;
 
     const token = this.crypto.decryptString(row.token_encrypted);
-    return rowToAccount(row, token);
+    return rowToAccount(row, token, this.decryptRefreshToken(row));
   }
 
   /**
@@ -1123,7 +1183,7 @@ export class AccountService {
    * Map every known refresh token to the set of user ids claiming it.
    * Refresh tokens are opaque (not JWTs), so ownership can only be inferred
    * from the places a token and a user id were captured TOGETHER:
-   *   - each account row's refresh_token column,
+   *   - each account row's DPAPI-encrypted refresh token,
    *   - each row's auth blob (only pairs where blob.userId is known),
    *   - the live sessions in local Trae storages (authoritative).
    * A refresh token claimed by exactly one user is owned by that user; one
@@ -1203,7 +1263,7 @@ export class AccountService {
 
       const db = getDatabase();
       db.prepare(
-        "UPDATE accounts SET refresh_token = NULL, updated_at = datetime('now') WHERE id = ?"
+        "UPDATE accounts SET refresh_token = NULL, refresh_token_encrypted = NULL, updated_at = datetime('now') WHERE id = ?"
       ).run(account.id);
 
       const blob = this.getAccountAuthBlob(account.id);
@@ -1536,12 +1596,15 @@ export class AccountService {
    * restores switchable accounts without re-login. Field names follow the
    * Cockpit-style reference export (snake_case) for interoperability.
    */
-  exportAccounts(ids?: number[], filePath?: string): ExportAccount {
+  exportAccounts(ids?: number[], filePath?: string, password?: string): ExportAccount {
     let accounts = this.getAllAccounts();
 
-    if (ids && ids.length > 0) {
+    if (ids) {
       const idSet = new Set(ids);
       accounts = accounts.filter(a => idSet.has(a.id));
+    }
+    if (accounts.length === 0) {
+      throw new Error('没有可导出的账号');
     }
 
     const exportData: ExportAccount = {
@@ -1582,7 +1645,8 @@ export class AccountService {
     };
 
     if (filePath) {
-      fs.writeFileSync(filePath, JSON.stringify(exportData, null, 2), 'utf-8');
+      const encrypted = encryptExport(exportData, password || '');
+      fs.writeFileSync(filePath, JSON.stringify(encrypted, null, 2), 'utf-8');
     }
 
     return exportData;
@@ -1595,13 +1659,21 @@ export class AccountService {
    *  - v2 (this app): { version: 2, accounts: [{ snake_case ..., trae_auth_raw }] }
    *  - Cockpit bare array: [{ snake_case ..., trae_auth_raw, ... }]
    */
-  async importAccountsFromFile(filePath: string): Promise<Account[]> {
+  async importAccountsFromFile(filePath: string, password?: string): Promise<Account[]> {
+    const stat = fs.statSync(filePath);
+    if (stat.size > 10 * 1024 * 1024) {
+      throw new Error('导入文件过大（最大 10 MB）');
+    }
     const content = fs.readFileSync(filePath, 'utf-8');
     let parsed: unknown;
     try {
       parsed = JSON.parse(content);
     } catch {
       throw new Error('文件不是有效的 JSON');
+    }
+
+    if (isEncryptedExportEnvelope(parsed)) {
+      parsed = decryptExport(parsed, password || '');
     }
 
     let entries: ExportAccountEntry[];
@@ -1620,14 +1692,25 @@ export class AccountService {
     if (entries.length === 0) {
       throw new Error('文件中没有账号数据');
     }
+    if (entries.length > 1000) {
+      throw new Error('导入账号数量过多（最大 1000 个）');
+    }
 
     const importedAccounts: Account[] = [];
 
     for (const acc of entries) {
       try {
+        if (!acc || typeof acc !== 'object') {
+          logger.warn('Import skipped malformed account entry');
+          continue;
+        }
         const token = acc.access_token || acc.token;
         if (!token) {
           logger.warn(`Import skipped ${acc.nickname || '(unnamed)'}: no access token`);
+          continue;
+        }
+        if (!this.crypto.isValidToken(token)) {
+          logger.warn(`Import skipped ${acc.nickname || '(unnamed)'}: malformed access token`);
           continue;
         }
 
@@ -1826,7 +1909,9 @@ export class AccountService {
     return {
       success: result.success,
       creditsEarned: result.creditsEarned,
-      message: result.success ? `签到成功！获得 ${result.creditsEarned} 积分` : '签到失败',
+      message: result.success
+        ? (result.alreadyClaimed ? '今日已签到' : `签到成功！获得 ${result.creditsEarned} 积分`)
+        : (result.message || '签到失败'),
       alreadyCheckedIn: result.alreadyClaimed,
     };
   }

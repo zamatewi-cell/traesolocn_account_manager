@@ -175,6 +175,10 @@ export interface Translations {
     dataManagement: string;
     exportAccounts: string;
     exportDescription: string;
+    backupPassword: string;
+    backupPasswordPlaceholder: string;
+    backupPasswordHint: string;
+    backupPasswordRequired: string;
     allAccounts: string;
     importAccounts: string;
     importDescription: string;
@@ -445,7 +449,11 @@ const en: Translations = {
     autoCheckinInvalidWindow: 'Start time must be earlier than end time',
     dataManagement: 'Data Management',
     exportAccounts: 'Export Accounts',
-    exportDescription: 'Export all accounts as a JSON file (includes tokens)',
+    exportDescription: 'Export accounts as a password-encrypted JSON backup',
+    backupPassword: 'Backup password',
+    backupPasswordPlaceholder: 'At least 8 characters',
+    backupPasswordHint: 'Required for export and for restoring an encrypted backup. This password cannot be recovered.',
+    backupPasswordRequired: 'Enter a backup password of at least 8 characters',
     allAccounts: 'All accounts',
     importAccounts: 'Import Accounts',
     importDescription: 'Import accounts from a previously exported JSON file',
@@ -453,7 +461,7 @@ const en: Translations = {
     version: 'Version',
     accountsStored: 'Accounts stored',
     dataLocation: 'Data location',
-    securityNote: 'Security note: Exported JSON files contain your authentication tokens in plain text. Keep them secure and never share them with anyone.',
+    securityNote: 'Security note: Account credentials are encrypted with AES-256-GCM. Keep both the backup file and its password secure.',
     quickTips: 'Quick Tips',
     tip1: 'Close Traework completely before switching accounts to avoid conflicts',
     tip2: 'Use batch checkin daily to quickly collect credits across all accounts',
@@ -714,7 +722,11 @@ const zh: Translations = {
     autoCheckinInvalidWindow: '开始时间必须早于结束时间',
     dataManagement: '数据管理',
     exportAccounts: '导出账号',
-    exportDescription: '将所有账号导出为 JSON 文件（包含令牌）',
+    exportDescription: '将账号导出为密码加密的 JSON 备份',
+    backupPassword: '备份密码',
+    backupPasswordPlaceholder: '至少 8 个字符',
+    backupPasswordHint: '导出及恢复加密备份时需要，密码无法找回。',
+    backupPasswordRequired: '请输入至少 8 个字符的备份密码',
     allAccounts: '所有账号',
     importAccounts: '导入账号',
     importDescription: '从之前导出的 JSON 文件导入账号',
@@ -722,7 +734,7 @@ const zh: Translations = {
     version: '版本',
     accountsStored: '已存储账号',
     dataLocation: '数据位置',
-    securityNote: '安全提示：导出的 JSON 文件包含明文身份验证令牌，请妥善保管，切勿与他人分享。',
+    securityNote: '安全提示：账号凭据使用 AES-256-GCM 加密；请同时妥善保管备份文件和密码。',
     quickTips: '快速提示',
     tip1: '切换账号前请完全关闭 Trae 以避免冲突',
     tip2: '每日使用批量签到快速领取所有账号积分',

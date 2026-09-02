@@ -3,7 +3,7 @@ import { X, LogIn, Key, Monitor, Upload, Check } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useToast } from '../../contexts/ToastContext';
 import { useLanguage } from '../../contexts/LanguageContext';
-import type { LocalAccountInfo } from '../../../shared/types';
+import type { LocalAccountView } from '../../../shared/types';
 
 type AddMethod = 'oauth' | 'token' | 'local' | 'import';
 
@@ -12,8 +12,8 @@ interface AddAccountDialogProps {
   onClose: () => void;
   onAddByOAuth: () => Promise<boolean>;
   onAddByToken: (token: string) => Promise<boolean>;
-  onAddFromLocal: (localInfo?: LocalAccountInfo) => Promise<boolean>;
-  onImportFromJson: () => Promise<boolean>;
+  onAddFromLocal: (localInfo?: LocalAccountView) => Promise<boolean>;
+  onImportFromJson: (password?: string) => Promise<boolean>;
 }
 
 export function AddAccountDialog({
@@ -27,8 +27,9 @@ export function AddAccountDialog({
   const { t } = useLanguage();
   const [selectedMethod, setSelectedMethod] = useState<AddMethod>('oauth');
   const [tokenInput, setTokenInput] = useState('');
-  const [localAccounts, setLocalAccounts] = useState<LocalAccountInfo[]>([]);
-  const [selectedLocalAccount, setSelectedLocalAccount] = useState<LocalAccountInfo | null>(null);
+  const [backupPassword, setBackupPassword] = useState('');
+  const [localAccounts, setLocalAccounts] = useState<LocalAccountView[]>([]);
+  const [selectedLocalAccount, setSelectedLocalAccount] = useState<LocalAccountView | null>(null);
   const [loading, setLoading] = useState(false);
   const { showToast } = useToast();
 
@@ -44,6 +45,7 @@ export function AddAccountDialog({
     if (isOpen) {
       checkLocalAccounts();
       setTokenInput('');
+      setBackupPassword('');
       setSelectedMethod('oauth');
       setSelectedLocalAccount(null);
     }
@@ -53,7 +55,7 @@ export function AddAccountDialog({
     try {
       const result = await window.electronAPI.storage.detectAllLocalAccounts();
       if (result.success && result.data) {
-        setLocalAccounts(result.data.filter(a => a.exists && a.token));
+        setLocalAccounts(result.data.filter(a => a.exists));
         if (result.data.length > 0) {
           setSelectedLocalAccount(result.data[0]);
         }
@@ -85,7 +87,7 @@ export function AddAccountDialog({
           success = await onAddFromLocal(selectedLocalAccount || undefined);
           break;
         case 'import':
-          success = await onImportFromJson();
+          success = await onImportFromJson(backupPassword || undefined);
           break;
       }
 
@@ -252,7 +254,7 @@ export function AddAccountDialog({
             )}
 
             {selectedMethod === 'import' && (
-              <div className="text-center py-6">
+              <div className="text-center py-6 space-y-4">
                 <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-blue-500/20 to-cyan-500/20 flex items-center justify-center">
                   <Upload className="w-8 h-8 text-blue-400" />
                 </div>
@@ -262,6 +264,21 @@ export function AddAccountDialog({
                 <p className="text-text-tertiary text-xs">
                   {t.addAccount.jsonHint}
                 </p>
+                <div className="text-left">
+                  <label className="block text-sm font-medium text-text-primary mb-2" htmlFor="import-backup-password">
+                    {t.settings.backupPassword}
+                  </label>
+                  <input
+                    id="import-backup-password"
+                    type="password"
+                    value={backupPassword}
+                    onChange={(event) => setBackupPassword(event.target.value)}
+                    placeholder={t.settings.backupPasswordPlaceholder}
+                    autoComplete="current-password"
+                    className="input w-full"
+                  />
+                  <p className="text-xs text-text-muted mt-2">{t.settings.backupPasswordHint}</p>
+                </div>
               </div>
             )}
           </div>

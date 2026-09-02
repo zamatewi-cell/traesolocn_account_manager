@@ -83,8 +83,7 @@ class CryptoServiceImpl implements CryptoService {
 
   encryptString(plainText: string): Buffer {
     if (!this.isAvailable) {
-      logger.warn('Encryption not available, storing plaintext (fallback)');
-      return Buffer.from(plainText, 'utf-8');
+      throw new Error('系统安全存储不可用，拒绝以明文保存账号凭据');
     }
     return safeStorage.encryptString(plainText);
   }

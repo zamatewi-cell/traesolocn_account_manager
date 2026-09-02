@@ -4,7 +4,7 @@ import { useAccounts } from '../hooks/useAccounts';
 import { AccountAvatar } from '../components/common/AccountAvatar';
 import { useLanguage } from '../contexts/LanguageContext';
 import { cn, formatNumber } from '../lib/utils';
-import type { Account } from '../../shared/types';
+import type { AccountView } from '../../shared/types';
 
 interface CheckinProgress {
   accountId: number;
@@ -15,7 +15,7 @@ interface CheckinProgress {
 
 export function BatchCheckinPage() {
   const { t } = useLanguage();
-  const { accounts, checkinBatch, checkinSingle } = useAccounts();
+  const { accounts, checkinBatch } = useAccounts();
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [progress, setProgress] = useState<Map<number, CheckinProgress>>(new Map());
   const [isRunning, setIsRunning] = useState(false);
@@ -54,56 +54,45 @@ export function BatchCheckinPage() {
     });
     setProgress(new Map(progressMap));
 
-    // Process in batches of 3
-    const concurrency = 3;
-    let successCount = 0;
-    let alreadyCount = 0;
-    let failedCount = 0;
-
-    const processAccount = async (id: number) => {
+    // The main process owns the global device queue and rate limit. Mark all
+    // selected rows as running while it processes them sequentially.
+    ids.forEach(id => {
       progressMap.set(id, { accountId: id, status: 'checking' });
-      setProgress(new Map(progressMap));
-
-      try {
-        const result = await checkinSingle(id);
-        if (result) {
-          progressMap.set(id, { 
-            accountId: id, 
-            status: 'success',
-            message: t.batchCheckin.checkinSuccess,
-          });
-          successCount++;
-        } else {
-          progressMap.set(id, { accountId: id, status: 'already', message: t.batchCheckin.alreadyCheckedToday });
-          alreadyCount++;
-        }
-      } catch (err) {
-        progressMap.set(id, { 
-          accountId: id, 
-          status: 'failed', 
-          message: (err as Error).message || t.batchCheckin.checkinFailed 
-        });
-        failedCount++;
-      }
-      setProgress(new Map(progressMap));
-    };
-
-    // Process with concurrency limit
-    for (let i = 0; i < ids.length; i += concurrency) {
-      const batch = ids.slice(i, i + concurrency);
-      await Promise.all(batch.map(id => processAccount(id)));
-      // Small delay between batches
-      if (i + concurrency < ids.length) {
-        await new Promise(r => setTimeout(r, 600));
-      }
-    }
-
-    setSummary({
-      total: ids.length,
-      success: successCount,
-      already: alreadyCount,
-      failed: failedCount,
     });
+    setProgress(new Map(progressMap));
+
+    const result = await checkinBatch(ids);
+    if (result) {
+      for (const item of result.results) {
+        progressMap.set(item.accountId, {
+          accountId: item.accountId,
+          status: item.success
+            ? (item.alreadyClaimed ? 'already' : 'success')
+            : 'failed',
+          message: item.message || (item.success ? t.batchCheckin.checkinSuccess : t.batchCheckin.checkinFailed),
+          creditsEarned: item.creditsEarned,
+        });
+      }
+      for (const item of result.errors) {
+        progressMap.set(item.accountId, {
+          accountId: item.accountId,
+          status: 'failed',
+          message: item.error || t.batchCheckin.checkinFailed,
+        });
+      }
+      setSummary({
+        total: result.total,
+        success: result.success,
+        already: result.alreadyClaimed,
+        failed: result.failed,
+      });
+    } else {
+      ids.forEach(id => {
+        progressMap.set(id, { accountId: id, status: 'failed', message: t.batchCheckin.checkinFailed });
+      });
+      setSummary({ total: ids.length, success: 0, already: 0, failed: ids.length });
+    }
+    setProgress(new Map(progressMap));
     setIsRunning(false);
   };
 
@@ -201,7 +190,7 @@ export function BatchCheckinPage() {
           </div>
         ) : (
           <div className="space-y-2">
-            {accounts.map((account: Account) => {
+            {accounts.map((account: AccountView) => {
               const prog = progress.get(account.id);
               const isSelected = selected.has(account.id);
 

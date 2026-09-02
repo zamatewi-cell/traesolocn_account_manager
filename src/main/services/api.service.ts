@@ -441,6 +441,7 @@ export class ApiService {
     alreadyClaimed: boolean;
     creditsEarned: number;
     newBalance: number;
+    message?: string;
   }> {
     const origin = resolveOrigin(host);
     try {
@@ -476,18 +477,52 @@ export class ApiService {
         throw new Error('操作太频繁 (9074)；若本机从未登录过 Trae 客户端，请先登录一次再签到');
       }
 
+      // 9095 is device-scoped, not account-scoped. Confirm the current account
+      // before classifying it: a repeated request by an account that really did
+      // check in is "already claimed", while an unchecked account must remain a
+      // failure because another account consumed this device's daily slot.
+      if (code === 9095) {
+        const confirmed = await this.getCheckinStatus(token, host, deviceId);
+        if (confirmed?.checkedIn) {
+          return {
+            success: true,
+            alreadyClaimed: true,
+            creditsEarned: 0,
+            newBalance: 0,
+          };
+        }
+        return {
+          success: false,
+          alreadyClaimed: false,
+          creditsEarned: 0,
+          newBalance: 0,
+          message: '当前设备今日签到名额已被其他账号使用，请明日再试',
+        };
+      }
+
       // code 0 = success
-      const alreadyClaimed = code !== 0 && code !== 200 && (
+      let alreadyClaimed = code !== 0 && code !== 200 && (
         message.includes('already') ||
         message.includes('已签到') ||
         result?.checked_in ||
         result?.checkedIn
       );
-      const success = code === 0 || code === 200 || alreadyClaimed;
+      let success = code === 0 || code === 200;
+
+      // A message containing "已签到" is not sufficient: device-limit errors
+      // use the same wording. Confirm that THIS account is checked in before
+      // reporting an already-claimed success.
+      if (!success && alreadyClaimed) {
+        const confirmed = await this.getCheckinStatus(token, host, deviceId);
+        alreadyClaimed = !!confirmed?.checkedIn;
+        success = alreadyClaimed;
+      }
 
       // The claim response itself does not include the earned credits, so
       // re-query the status after a successful claim to get the accurate reward.
-      let creditsEarned = result?.credits || result?.credits_earned || (alreadyClaimed ? 0 : 200);
+      // Never invent a reward when the server omitted it. A guessed 200 used
+      // to corrupt the local balance whenever the confirmation query failed.
+      let creditsEarned = Number(result?.credits ?? result?.credits_earned ?? 0);
       let newBalance = result?.new_balance || result?.balance || 0;
       if (success && !alreadyClaimed) {
         try {
@@ -496,7 +531,7 @@ export class ApiService {
             creditsEarned = afterStatus.credits;
           }
         } catch {
-          // Ignore - fall back to the default reward
+          // Ignore - keep the reward returned by the claim response.
         }
       }
 
@@ -505,6 +540,7 @@ export class ApiService {
         alreadyClaimed,
         creditsEarned,
         newBalance,
+        message: success ? undefined : (message || `签到接口返回错误码 ${code}`),
       };
     } catch (err) {
       logger.error('claimCheckin failed:', err);

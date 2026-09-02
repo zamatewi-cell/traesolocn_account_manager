@@ -11,6 +11,7 @@ export function SettingsPage() {
   const { accounts, exportAccounts, importFromJson } = useAccounts();
   const { showToast } = useToast();
   const [exportAll, setExportAll] = useState(true);
+  const [backupPassword, setBackupPassword] = useState('');
   const [settings, setSettings] = useState<AppSettings>({
     autoCloseTrae: true,
     autoRestartTrae: true,
@@ -238,11 +239,18 @@ export function SettingsPage() {
   };
 
   const handleExport = async () => {
-    await exportAccounts(exportAll ? undefined : accounts.filter(a => a.isActive).map(a => a.id));
+    if (backupPassword.length < 8) {
+      showToast(t.settings.backupPasswordRequired, 'warning');
+      return;
+    }
+    await exportAccounts(
+      exportAll ? undefined : accounts.filter(a => a.isActive).map(a => a.id),
+      backupPassword
+    );
   };
 
   const handleImport = async () => {
-    await importFromJson();
+    await importFromJson(backupPassword || undefined);
   };
 
   const handleLanguageChange = (lang: Language) => {
@@ -594,6 +602,21 @@ export function SettingsPage() {
           <h3 className="text-lg font-semibold text-text-primary mb-4">{t.settings.dataManagement}</h3>
           
           <div className="space-y-4">
+            <div className="p-4 rounded-xl bg-surface/[0.03] space-y-2">
+              <label className="block text-sm font-medium text-text-primary" htmlFor="backup-password">
+                {t.settings.backupPassword}
+              </label>
+              <input
+                id="backup-password"
+                type="password"
+                value={backupPassword}
+                onChange={(event) => setBackupPassword(event.target.value)}
+                placeholder={t.settings.backupPasswordPlaceholder}
+                autoComplete="new-password"
+                className="input w-full"
+              />
+              <p className="text-xs text-text-muted">{t.settings.backupPasswordHint}</p>
+            </div>
             <div className="flex items-center justify-between p-4 rounded-xl bg-surface/[0.03]">
               <div className="flex items-center gap-4">
                 <div className="w-10 h-10 rounded-xl bg-green-500/20 flex items-center justify-center">
@@ -761,7 +784,7 @@ export function SettingsPage() {
 
           <div className="mt-6 p-4 rounded-xl bg-indigo-500/10 border border-indigo-500/20">
             <p className="text-sm text-text-secondary">
-              <strong className="text-indigo-400">{t.settings.securityNote.split(':')[0]}:</strong> {t.settings.securityNote.split(':')[1] || t.settings.securityNote}
+              <strong className="text-indigo-400">{t.settings.securityNote}</strong>
             </p>
           </div>
         </div>

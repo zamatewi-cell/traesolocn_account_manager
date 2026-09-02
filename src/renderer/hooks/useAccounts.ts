@@ -1,10 +1,10 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
-import type { Account } from '../../shared/types';
+import type { AccountView, BatchCheckinResult, LocalAccountView } from '../../shared/types';
 import { useToast } from '../contexts/ToastContext';
 import { useLanguage } from '../contexts/LanguageContext';
 
 function useAccountsState() {
-  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [accounts, setAccounts] = useState<AccountView[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [checkingIn, setCheckingIn] = useState<Set<number>>(new Set());
@@ -97,7 +97,7 @@ function useAccountsState() {
           }
           return [result.data!, ...prev];
         });
-        if (result.data.refreshToken) {
+        if (result.data.hasRefreshToken) {
           showToast(t.toast.loggedInAs(result.data.nickname), 'success');
         } else {
           // Fresh machine without a matching local Trae session: only the
@@ -116,7 +116,7 @@ function useAccountsState() {
     }
   }, [showToast, t]);
 
-  const addFromLocal = useCallback(async (localInfo?: any): Promise<boolean> => {
+  const addFromLocal = useCallback(async (localInfo?: LocalAccountView): Promise<boolean> => {
     try {
       const result = await window.electronAPI.accounts.addFromLocal(localInfo);
       if (result.success && result.data) {
@@ -141,15 +141,17 @@ function useAccountsState() {
     }
   }, [showToast, t]);
 
-  const importFromJson = useCallback(async (): Promise<boolean> => {
+  const importFromJson = useCallback(async (password?: string): Promise<boolean> => {
     try {
-      const result = await window.electronAPI.accounts.importFromJson();
+      const result = await window.electronAPI.accounts.importFromJson(password);
       if (result.success && result.data) {
         await loadAccounts();
         showToast(t.toast.importedAccounts(result.data.length), 'success');
         return true;
       } else {
-        showToast(result.error || t.toast.importFailed, 'error');
+        if (result.error !== 'CANCELLED') {
+          showToast(result.error || t.toast.importFailed, 'error');
+        }
         return false;
       }
     } catch (err) {
@@ -158,16 +160,19 @@ function useAccountsState() {
     }
   }, [loadAccounts, showToast, t]);
 
-  const exportAccounts = useCallback(async (ids?: number[]) => {
+  const exportAccounts = useCallback(async (ids?: number[], password?: string): Promise<boolean> => {
     try {
-      const result = await window.electronAPI.accounts.export(ids);
+      const result = await window.electronAPI.accounts.export(ids, password);
       if (result.success) {
         showToast(t.toast.exportedSuccess, 'success');
-      } else if (result.error !== 'Export cancelled') {
+        return true;
+      } else if (result.error !== 'CANCELLED') {
         showToast(result.error || t.toast.exportFailed, 'error');
       }
+      return false;
     } catch (err) {
       showToast(t.toast.exportFailed, 'error');
+      return false;
     }
   }, [showToast, t]);
 
@@ -252,6 +257,10 @@ function useAccountsState() {
     try {
       const result = await window.electronAPI.checkin.single(id);
       if (result.success && result.data) {
+        if (!result.data.success) {
+          showToast(result.data.message || t.toast.checkinFailed, 'error');
+          return false;
+        }
         await refreshAccount(id);
         if (result.data.alreadyClaimed) {
           showToast(t.toast.alreadyCheckedIn, 'info');
@@ -275,7 +284,7 @@ function useAccountsState() {
     }
   }, [refreshAccount, showToast, t]);
 
-  const checkinBatch = useCallback(async (ids: number[]): Promise<boolean> => {
+  const checkinBatch = useCallback(async (ids: number[]): Promise<BatchCheckinResult | null> => {
     setBatchCheckingIn(true);
     try {
       const result = await window.electronAPI.checkin.batch(ids);
@@ -286,14 +295,14 @@ function useAccountsState() {
           t.toast.batchComplete(success, alreadyClaimed, failed, total),
           failed > 0 ? 'warning' : 'success'
         );
-        return failed === 0;
+        return result.data;
       } else {
         showToast(result.error || t.toast.batchFailed, 'error');
-        return false;
+        return null;
       }
     } catch (err) {
       showToast(t.toast.batchFailed, 'error');
-      return false;
+      return null;
     } finally {
       setBatchCheckingIn(false);
     }

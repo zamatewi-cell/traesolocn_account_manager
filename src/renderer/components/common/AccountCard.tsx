@@ -4,10 +4,10 @@ import { CheckCircle2, RefreshCw, LogIn, Trash2, Coins, MoreVertical, Check, XCi
 import { cn, formatNumber, formatDate, getPayStatusType, getPayStatusColor, getPayStatusBadgeClass, getPayStatusLabel, getQuotaDisplay, formatExpiration, getEntitlementTypeLabel } from '../../lib/utils';
 import { AccountAvatar } from './AccountAvatar';
 import { useLanguage } from '../../contexts/LanguageContext';
-import type { Account, UsageRecord } from '../../../shared/types';
+import type { AccountView, UsageRecord } from '../../../shared/types';
 
 interface AccountCardProps {
-  account: Account;
+  account: AccountView;
   isCheckingIn: boolean;
   isSwitching: boolean;
   onCheckin: () => void;
