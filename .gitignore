@@ -25,3 +25,7 @@ Thumbs.db
 
 /.idea/
 /.workbuddy/
+
+# Agent workspace artifacts
+.agents/
+

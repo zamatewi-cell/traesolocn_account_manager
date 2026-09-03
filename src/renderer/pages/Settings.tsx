@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Settings as SettingsIcon, Download, Upload, Info, Globe, Check, RefreshCw, FolderSearch, Power, Rocket, FileCode2, Sparkles, ExternalLink, CalendarClock, CalendarCheck, Clock, Play, ChevronDown, ChevronRight, CheckCircle2, MinusCircle, XCircle, Trash2 } from 'lucide-react';
+import { Settings as SettingsIcon, Download, Upload, Info, Globe, Check, RefreshCw, FolderSearch, Power, Rocket, FileCode2, Sparkles, ExternalLink, CalendarClock, CalendarCheck, Clock, Play, ChevronDown, ChevronRight, CheckCircle2, MinusCircle, XCircle, Trash2, Cpu, Laptop, Plus, Copy, Pencil } from 'lucide-react';
 import { useAccounts } from '../hooks/useAccounts';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useToast } from '../contexts/ToastContext';
-import { cn } from '../lib/utils';
-import type { Language, AppSettings, UpdateInfo, UpdateProgress, AutoCheckinStatus, AutoCheckinRecord } from '../../shared/types';
+import { cn, formatDate } from '../lib/utils';
+import type { Language, AppSettings, UpdateInfo, UpdateProgress, AutoCheckinStatus, AutoCheckinRecord, DeviceItem } from '../../shared/types';
 
 export function SettingsPage() {
   const { t, language, setLanguage } = useLanguage();
@@ -37,6 +37,127 @@ export function SettingsPage() {
   const [progress, setProgress] = useState<UpdateProgress | null>(null);
   const [installerPath, setInstallerPath] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
+
+  // Device pool state
+  const [devices, setDevices] = useState<DeviceItem[]>([]);
+  const [loadingDevices, setLoadingDevices] = useState(false);
+  const [scanningLocal, setScanningLocal] = useState(false);
+  const [showAddDevice, setShowAddDevice] = useState(false);
+  const [newDeviceId, setNewDeviceId] = useState('');
+  const [newDeviceLabel, setNewDeviceLabel] = useState('');
+  const [addingDevice, setAddingDevice] = useState(false);
+  const [testingDeviceId, setTestingDeviceId] = useState<string | null>(null);
+  const [editingDeviceId, setEditingDeviceId] = useState<number | null>(null);
+  const [editingLabel, setEditingLabel] = useState('');
+
+  const loadDevices = useCallback(async () => {
+    setLoadingDevices(true);
+    try {
+      const result = await window.electronAPI.devices.list();
+      if (result.success && result.data) {
+        setDevices(result.data);
+      }
+    } finally {
+      setLoadingDevices(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadDevices();
+    const unsubscribe = window.electronAPI.devices.onDevicesUpdated?.(() => {
+      loadDevices();
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, [loadDevices]);
+
+  const handleScanLocalDevices = async () => {
+    setScanningLocal(true);
+    try {
+      const result = await window.electronAPI.devices.scanLocal();
+      if (result.success && result.data) {
+        setDevices(result.data);
+        showToast(language === 'zh' ? `扫描完成，已同步 ${result.data.length} 个设备 ID` : `Scanned successfully, ${result.data.length} device(s) synced`, 'success');
+      } else {
+        showToast(result.error || '扫描本地设备失败', 'error');
+      }
+    } catch (err) {
+      showToast((err as Error).message || '扫描本地设备失败', 'error');
+    } finally {
+      setScanningLocal(false);
+    }
+  };
+
+  const handleAddDevice = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newDeviceId.trim()) {
+      showToast(language === 'zh' ? '请输入设备 ID' : 'Please enter device ID', 'warning');
+      return;
+    }
+    setAddingDevice(true);
+    try {
+      const result = await window.electronAPI.devices.add(newDeviceId.trim(), newDeviceLabel.trim());
+      if (result.success && result.data) {
+        setDevices(prev => [...prev, result.data!]);
+        setNewDeviceId('');
+        setNewDeviceLabel('');
+        setShowAddDevice(false);
+        showToast(t.settings.deviceAdded, 'success');
+      } else {
+        showToast(result.error || '添加设备失败', 'error');
+      }
+    } catch (err) {
+      showToast((err as Error).message || '添加设备失败', 'error');
+    } finally {
+      setAddingDevice(false);
+    }
+  };
+
+  const handleUpdateLabel = async (id: number) => {
+    try {
+      const result = await window.electronAPI.devices.update(id, editingLabel.trim());
+      if (result.success && result.data) {
+        setDevices(prev => prev.map(d => d.id === id ? result.data! : d));
+        setEditingDeviceId(null);
+        showToast(t.settings.deviceUpdated, 'success');
+      } else {
+        showToast(result.error || '更新失败', 'error');
+      }
+    } catch (err) {
+      showToast((err as Error).message || '更新失败', 'error');
+    }
+  };
+
+  const handleDeleteDevice = async (id: number) => {
+    try {
+      const result = await window.electronAPI.devices.delete(id);
+      if (result.success) {
+        setDevices(prev => prev.filter(d => d.id !== id));
+        showToast(t.settings.deviceDeleted, 'success');
+      } else {
+        showToast(result.error || '删除失败', 'error');
+      }
+    } catch (err) {
+      showToast((err as Error).message || '删除失败', 'error');
+    }
+  };
+
+  const handleTestDevice = async (deviceId: string) => {
+    setTestingDeviceId(deviceId);
+    try {
+      const result = await window.electronAPI.devices.test(deviceId);
+      if (result.success && result.data) {
+        showToast(result.data.message || t.settings.deviceTested, 'success');
+      } else {
+        showToast(result.error || '测试失败', 'error');
+      }
+    } catch (err) {
+      showToast((err as Error).message || '测试失败', 'error');
+    } finally {
+      setTestingDeviceId(null);
+    }
+  };
 
   // Load settings and app version on mount
   useEffect(() => {
@@ -577,6 +698,12 @@ export function SettingsPage() {
                               <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
                             )}
                               <span className="text-text-secondary truncate">{res.accountName || `#${res.accountId}`}</span>
+                              {res.deviceId && (
+                                <span className="flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface/10 text-text-muted border border-surface/10 shrink-0" title={`生效设备 ID: ${res.deviceId}`}>
+                                  <Cpu className="w-3 h-3 text-indigo-400" />
+                                  <span>{res.deviceId.length > 8 ? `${res.deviceId.slice(0, 8)}...` : res.deviceId}</span>
+                                </span>
+                              )}
                               {res.creditsEarned > 0 && (
                                 <span className="text-emerald-400 shrink-0">+{res.creditsEarned}</span>
                               )}
@@ -595,6 +722,225 @@ export function SettingsPage() {
               )}
             </div>
           </div>
+        </div>
+
+        {/* Device ID Pool Management section */}
+        <div className="card">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+              <Cpu className="w-5 h-5 text-indigo-400" />
+              {t.settings.devicePoolTitle}
+            </h3>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleScanLocalDevices}
+                disabled={scanningLocal}
+                className="btn btn-secondary text-xs flex items-center gap-1.5 !py-1.5 !px-3"
+              >
+                <RefreshCw className={cn('w-3.5 h-3.5', scanningLocal && 'animate-spin')} />
+                {scanningLocal ? t.settings.scanningLocalDevices : t.settings.scanLocalDevices}
+              </button>
+              <button
+                onClick={() => setShowAddDevice(!showAddDevice)}
+                className="btn btn-primary text-xs flex items-center gap-1.5 !py-1.5 !px-3"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                {t.settings.addDevice}
+              </button>
+            </div>
+          </div>
+          <p className="text-sm text-text-tertiary mb-4">
+            {t.settings.devicePoolSubtitle}
+          </p>
+
+          {/* Inline Add Device Form */}
+          {showAddDevice && (
+            <form onSubmit={handleAddDevice} className="mb-4 p-4 rounded-xl bg-surface/[0.04] border border-indigo-500/20 space-y-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-text-secondary mb-1">
+                    {t.settings.deviceId} <span className="text-red-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={newDeviceId}
+                    onChange={(e) => setNewDeviceId(e.target.value)}
+                    placeholder={t.settings.deviceIdPlaceholder}
+                    className="input w-full font-mono text-xs"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-text-secondary mb-1">
+                    {t.settings.deviceLabel}
+                  </label>
+                  <input
+                    type="text"
+                    value={newDeviceLabel}
+                    onChange={(e) => setNewDeviceLabel(e.target.value)}
+                    placeholder={t.settings.deviceLabelPlaceholder}
+                    className="input w-full text-xs"
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowAddDevice(false)}
+                  className="btn btn-ghost text-xs !py-1 !px-3"
+                >
+                  {t.common.cancel}
+                </button>
+                <button
+                  type="submit"
+                  disabled={addingDevice}
+                  className="btn btn-success text-xs !py-1 !px-3 flex items-center gap-1"
+                >
+                  {addingDevice ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                  {t.common.save}
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* Device list */}
+          {devices.length === 0 ? (
+            <div className="p-8 text-center rounded-xl bg-surface/[0.02] border border-surface/5">
+              <Cpu className="w-8 h-8 text-text-muted mx-auto mb-2 opacity-50" />
+              <p className="text-sm text-text-tertiary">{t.settings.noDevices}</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {devices.map((device) => {
+                const isEditing = editingDeviceId === device.id;
+                const isTesting = testingDeviceId === device.deviceId;
+                const prefixId = device.deviceId.length > 8 ? `${device.deviceId.slice(0, 8)}...` : device.deviceId;
+
+                return (
+                  <div
+                    key={device.id}
+                    className="p-3.5 rounded-xl bg-surface/[0.03] border border-surface/5 flex flex-col md:flex-row md:items-center justify-between gap-3 hover:bg-surface/[0.05] transition-colors"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className={cn(
+                        'w-9 h-9 rounded-lg flex items-center justify-center shrink-0',
+                        device.isLocal ? 'bg-emerald-500/15 text-emerald-400' : 'bg-blue-500/15 text-blue-400'
+                      )}>
+                        {device.isLocal ? <Laptop className="w-4 h-4" /> : <Cpu className="w-4 h-4" />}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {isEditing ? (
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="text"
+                                value={editingLabel}
+                                onChange={(e) => setEditingLabel(e.target.value)}
+                                className="input text-xs !py-0.5 !px-2 w-36"
+                                autoFocus
+                              />
+                              <button
+                                onClick={() => handleUpdateLabel(device.id)}
+                                className="btn btn-success text-xs !py-0.5 !px-2"
+                              >
+                                {t.common.save}
+                              </button>
+                              <button
+                                onClick={() => setEditingDeviceId(null)}
+                                className="btn btn-ghost text-xs !py-0.5 !px-2"
+                              >
+                                {t.common.cancel}
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-medium text-sm text-text-primary truncate">
+                                {device.label || (device.isLocal ? t.settings.deviceLocal : t.settings.deviceExternal)}
+                              </span>
+                              <button
+                                onClick={() => {
+                                  setEditingDeviceId(device.id);
+                                  setEditingLabel(device.label);
+                                }}
+                                className="text-text-muted hover:text-text-secondary p-0.5"
+                                title={t.common.edit}
+                              >
+                                <Pencil className="w-3 h-3" />
+                              </button>
+                            </div>
+                          )}
+
+                          <span className={cn(
+                            'text-[10px] px-1.5 py-0.5 rounded font-medium',
+                            device.isLocal
+                              ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20'
+                              : 'bg-blue-500/15 text-blue-400 border border-blue-500/20'
+                          )}>
+                            {device.isLocal ? t.settings.deviceLocal : t.settings.deviceExternal}
+                          </span>
+
+                          <span className={cn(
+                            'text-[10px] px-1.5 py-0.5 rounded font-medium',
+                            device.usedToday
+                              ? 'bg-amber-500/15 text-amber-400 border border-amber-500/20'
+                              : 'bg-green-500/15 text-green-400 border border-green-500/20'
+                          )}>
+                            {device.usedToday ? t.settings.deviceUsed : t.settings.deviceIdle}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2 text-xs text-text-tertiary mt-0.5 font-mono">
+                          <span>{prefixId}</span>
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(device.deviceId);
+                              showToast(language === 'zh' ? '设备 ID 已复制到剪贴板' : 'Device ID copied to clipboard', 'info');
+                            }}
+                            className="text-text-muted hover:text-text-secondary p-0.5"
+                            title="复制完整设备 ID"
+                          >
+                            <Copy className="w-3 h-3" />
+                          </button>
+                          {device.lastUsedAt && (
+                            <span className="text-[11px] text-text-muted font-sans ml-2">
+                              {t.settings.deviceLastUsed}: {formatDate(device.lastUsedAt)}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
+                      <button
+                        onClick={() => handleTestDevice(device.deviceId)}
+                        disabled={isTesting}
+                        className="btn btn-ghost text-xs !py-1 !px-2.5 flex items-center gap-1"
+                        title={t.settings.testDevice}
+                      >
+                        {isTesting ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+                        ) : (
+                          <CheckCircle2 className="w-3.5 h-3.5 text-text-tertiary hover:text-green-400" />
+                        )}
+                        <span>{isTesting ? t.settings.testingDevice : t.settings.testDevice}</span>
+                      </button>
+
+                      {!device.isLocal && (
+                        <button
+                          onClick={() => handleDeleteDevice(device.id)}
+                          className="btn btn-ghost text-xs !py-1 !px-2.5 text-red-400 hover:bg-red-500/10 flex items-center gap-1"
+                          title={t.common.delete}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>{t.common.delete}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Data management section */}

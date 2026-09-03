@@ -5,6 +5,7 @@ import { initDatabase, closeDatabase } from './services/database';
 import { registerAllIpcHandlers } from './ipc';
 import { ensureDirectories } from './utils/paths';
 import { getAccountService } from './services/account.service';
+import { getDeviceService } from './services/device.service';
 import { getAutoCheckinService } from './services/auto-checkin.service';
 import { getUpdateService } from './services/update.service';
 import { IPC_CHANNELS } from '../shared/types';
@@ -49,8 +50,10 @@ if (!gotTheLock) {
     // not unpacked from ASAR) never prevents the main window from being created.
     try {
       initDatabase();
+      getDeviceService().scanAndSyncLocalDevices();
+      logger.info('Device pool sync finished on startup.');
     } catch (err) {
-      logger.error('[DIAG] Database init failed (continuing without DB):', (err as Error).message);
+      logger.error('[DIAG] Database init or device sync failed:', (err as Error).message);
     }
 
     // Clear refresh tokens cross-contaminated by older builds BEFORE recovery

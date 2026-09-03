@@ -329,6 +329,20 @@ function useAccountsState() {
     return unsubscribe;
   }, []);
 
+  const setBoundDevice = useCallback(async (accountId: number, deviceId: string | null): Promise<boolean> => {
+    try {
+      const cleanId = deviceId && deviceId.trim() ? deviceId.trim() : null;
+      const result = await window.electronAPI.accounts.setBoundDevice(accountId, cleanId);
+      if (result.success) {
+        setAccounts(prev => prev.map(a => a.id === accountId ? { ...a, boundDeviceId: cleanId } : a));
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }, []);
+
   return {
     accounts,
     loading,
@@ -348,6 +362,7 @@ function useAccountsState() {
     switchAccount,
     checkinSingle,
     checkinBatch,
+    setBoundDevice,
   };
 }
 

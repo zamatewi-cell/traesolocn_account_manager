@@ -2,6 +2,7 @@ import { getDatabase } from './database';
 import { getCryptoService } from './crypto.service';
 import { getApiService } from './api.service';
 import { getTraeworkService } from './traework.service';
+import { getDeviceService } from './device.service';
 import { store } from '../utils/store';
 import { logger } from '../utils/logger';
 import { decryptExport, encryptExport, isEncryptedExportEnvelope } from '../utils/backup-crypto';
@@ -32,6 +33,7 @@ interface AccountRow {
   credits_balance: number;
   today_usage: number;
   total_usage: number;
+  bound_device_id?: string | null;
   pay_status: string | null;
   pay_identity_str: string | null;
   pay_expire_at: string | null;
@@ -102,6 +104,7 @@ function rowToAccount(row: AccountRow, token: string, refreshToken: string | nul
     tokenExpiredAt: row.token_expired_at,
     source: row.source as Account['source'],
     installName: row.install_name || undefined,
+    boundDeviceId: row.bound_device_id || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastRefreshedAt: row.last_refreshed_at,
@@ -240,13 +243,46 @@ export class AccountService {
   }
 
   /**
+   * 为账号设置绑定的设备 ID（传入 null 或空字符串则解除绑定，恢复为自动轮换）
+   */
+  setBoundDevice(accountId: number, deviceId: string | null): Account {
+    const account = this.getAccountById(accountId);
+    if (!account) {
+      throw new Error('账号不存在');
+    }
+    const cleanDeviceId = deviceId && deviceId.trim() ? deviceId.trim() : null;
+    if (cleanDeviceId) {
+      const deviceService = getDeviceService();
+      // 1. 格式合法性校验
+      deviceService.validateDeviceId(cleanDeviceId);
+      // 2. 设备池存在性校验（确保绑定的设备在设备池中合法存在）
+      const existingDevice = deviceService.findDevice(cleanDeviceId);
+      if (!existingDevice) {
+        throw new Error(`所选设备 ID (${cleanDeviceId.slice(0, 8)}...) 在设备池中不存在或已失效，请重新选择有效设备`);
+      }
+    }
+    const db = getDatabase();
+    db.prepare(`
+      UPDATE accounts
+      SET bound_device_id = ?,
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(cleanDeviceId, accountId);
+
+    const updated = this.getAccountById(accountId);
+    if (!updated) throw new Error('更新后账号读取失败');
+    logger.info(`账号 ${account.nickname} (ID: ${accountId}) 设备绑定已更新为: ${cleanDeviceId ? cleanDeviceId.slice(0, 8) + '...' : '自动轮换'}`);
+    return updated;
+  }
+
+  /**
    * Add a new account with the given token.
    * Fetches user info from API to populate nickname/email/avatar/credits.
    */
   async addAccount(
     token: string,
     source: Account['source'] = 'token_import',
-    prefilledInfo?: Partial<Pick<Account, 'nickname' | 'email' | 'userId' | 'avatarUrl' | 'phone' | 'refreshToken' | 'host' | 'installName' | 'tokenExpiredAt'>>,
+    prefilledInfo?: Partial<Pick<Account, 'nickname' | 'email' | 'userId' | 'avatarUrl' | 'phone' | 'refreshToken' | 'host' | 'installName' | 'tokenExpiredAt' | 'boundDeviceId'>>,
     authBlob?: TraeAuthData
   ): Promise<Account> {
     if (!this.crypto.isValidToken(token)) {
@@ -297,6 +333,9 @@ export class AccountService {
     if (userId) {
       const existing = this.findAccountByUserId(userId);
       if (existing) {
+        if (prefilledInfo?.boundDeviceId !== undefined) {
+          this.setBoundDevice(existing.id, prefilledInfo.boundDeviceId);
+        }
         // Update token and info for existing account
         return this.updateAccountToken(existing.id, token, {
           refreshToken: prefilledInfo?.refreshToken,
@@ -320,9 +359,9 @@ export class AccountService {
         nickname, email, user_id, avatar_url, phone,
         token_encrypted, refresh_token_encrypted, refresh_token, host, source, install_name,
         credits_balance, pay_status, pay_identity_str, entitlement_packs, token_expired_at,
-        auth_blob_encrypted
+        auth_blob_encrypted, bound_device_id
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       nickname,
       email,
@@ -340,7 +379,8 @@ export class AccountService {
       payStatus.identityStr || null,
       entitlementPacksJson,
       prefilledInfo?.tokenExpiredAt || null,
-      encryptedBlob
+      encryptedBlob,
+      prefilledInfo?.boundDeviceId || null
     );
 
     const accountId = result.lastInsertRowid as number;
@@ -1626,6 +1666,7 @@ export class AccountService {
         credits_balance: a.creditsBalance,
         source: a.source,
         install_name: a.installName ?? null,
+        bound_device_id: a.boundDeviceId ?? null,
         entitlement_packs: a.entitlementPacks,
         trae_auth_raw: this.getAccountAuthBlob(a.id),
         trae_profile_raw: {
@@ -1729,6 +1770,7 @@ export class AccountService {
           tokenExpiredAt = blob.expiredAt;
         }
 
+        const boundDeviceId = acc.bound_device_id ?? (acc as any).boundDeviceId ?? undefined;
         const account = await this.addAccount(token, 'token_import', {
           nickname: acc.nickname,
           email: acc.email ?? undefined,
@@ -1738,7 +1780,22 @@ export class AccountService {
           refreshToken: refreshToken ?? undefined,
           host,
           tokenExpiredAt,
+          boundDeviceId,
         }, blob ?? undefined);
+
+        if (boundDeviceId && boundDeviceId.trim()) {
+          try {
+            const devSvc = getDeviceService();
+            const cleanId = devSvc.validateDeviceId(boundDeviceId.trim());
+            const db = getDatabase();
+            const existingDev = db.prepare('SELECT id FROM devices WHERE device_id = ?').get(cleanId);
+            if (!existingDev) {
+              devSvc.addDevice(cleanId, `导入绑定 (${acc.nickname || '外部'})`);
+            }
+          } catch {
+            // 忽略历史导出文件中不规范的设备 ID 校验警告
+          }
+        }
 
         importedAccounts.push(account);
         logger.info(`Imported account ${account.nickname} (user ${account.userId}) with ${blob ? 'full' : 'no'} auth blob`);
@@ -1757,14 +1814,19 @@ export class AccountService {
   /**
    * Perform checkin for an account.
    */
-  async performCheckin(id: number): Promise<{ success: boolean; creditsEarned: number; message: string; alreadyCheckedIn: boolean }> {
+  async performCheckin(id: number, overrideDeviceId?: string): Promise<{
+    success: boolean;
+    creditsEarned: number;
+    message: string;
+    alreadyCheckedIn: boolean;
+    deviceId?: string;
+  }> {
     const account = this.getAccountById(id);
     if (!account) {
       throw new Error('账号不存在');
     }
 
     const host = account.host || 'https://api.trae.cn';
-    const deviceId = this.getDeviceId();
 
     // Ensure we have a valid (non-expired) token
     const { token } = await this.ensureValidToken(account);
@@ -1786,8 +1848,6 @@ export class AccountService {
     // endpoint: the server records the DEVICE's daily checkin slot even when it
     // later rejects the claim for auth, leaving the account in the
     // "该设备今日已签到 but 积分没有增加" state with no way to retry that day.
-    // ensureValidToken already tried the refresh token; if we still hold an
-    // expired JWT there is nothing left to do but ask for a re-import.
     const tokenExpIso = this.parseJwtExp(token);
     const tokenExpired = !!tokenExpIso && new Date(tokenExpIso).getTime() <= Date.now();
     if (!this.crypto.isValidToken(token) || tokenExpired) {
@@ -1802,117 +1862,282 @@ export class AccountService {
       };
     }
 
-    // First check current checkin status. A null result means the query failed
-    // (auth/network) - treat it as unknown and abort instead of claiming.
-    // Transient network drops (e.g. proxy/TUN reconnects) are common, so the
-    // query gets one quick retry before giving up.
-    let status = await this.api.getCheckinStatus(token, host, deviceId).catch(() => null);
-    if (!status) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      status = await this.api.getCheckinStatus(token, host, deviceId).catch(() => null);
-    }
-    if (!status) {
-      logger.warn(`Checkin aborted for account ${id}: status query failed`);
-      return {
-        success: false,
-        creditsEarned: 0,
-        message: '签到状态查询失败（令牌可能已失效或网络异常），已跳过签到以免占用当日设备名额',
-        alreadyCheckedIn: false,
-      };
-    }
+    // 获取设备调度候选列表
+    const deviceService = getDeviceService();
+    deviceService.checkAndResetDailyUsage();
 
-    if (status.checkedIn) {
-      return {
-        success: true,
-        creditsEarned: 0,
-        message: '今日已签到',
-        alreadyCheckedIn: true,
-      };
-    }
+    const boundDeviceId = overrideDeviceId || account.boundDeviceId || (account as any).bound_device_id;
+    let candidateDeviceIds: string[] = [];
 
-    // Perform checkin. Network-level failures (fetch failed / aborted) are
-    // common with proxy or VPN reconnects; retry with backoff instead of
-    // surfacing an immediate failure - a single dropped request previously
-    // left the account unsigned while the user was told "签到失败".
-    let result: Awaited<ReturnType<typeof this.api.claimCheckin>> | null = null;
-    let lastClaimError: Error | null = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    if (boundDeviceId && boundDeviceId.trim()) {
+      const cleanBoundId = boundDeviceId.trim();
+      // 1. 格式合法性校验
       try {
-        result = await this.api.claimCheckin(token, host, deviceId);
-        break;
+        deviceService.validateDeviceId(cleanBoundId);
       } catch (err) {
-        lastClaimError = err as Error;
-        logger.warn(`Checkin claim attempt ${attempt}/3 for account ${id} failed: ${lastClaimError.message}`);
-        if (attempt < 3) {
-          await new Promise(resolve => setTimeout(resolve, attempt * 2000));
+        return {
+          success: false,
+          creditsEarned: 0,
+          message: `账号绑定的设备 ID 格式不合法（${(err as Error).message}），请在账号设置中重新选择绑定设备`,
+          alreadyCheckedIn: false,
+        };
+      }
+
+      // 2. 设备池存在性检查（确保设备有效且未被用户删除）
+      const allPoolDevices = deviceService.getAllDevices();
+      const exists = allPoolDevices.some(d => d.deviceId === cleanBoundId);
+      if (!exists) {
+        logger.warn(`账号 ${id} (${account.nickname}) 绑定的设备 [${cleanBoundId.slice(0, 8)}...] 在设备池中不存在或已失效`);
+        return {
+          success: false,
+          creditsEarned: 0,
+          message: `账号绑定的设备 [${cleanBoundId.length > 8 ? cleanBoundId.slice(0, 8) + '...' : cleanBoundId}] 在设备池中不存在或已失效，请重新绑定或切换为自动轮换`,
+          alreadyCheckedIn: false,
+        };
+      }
+
+      // 账号绑定模式：严格使用绑定的设备 ID
+      candidateDeviceIds = [cleanBoundId];
+    } else {
+      // 自动轮换模式：优先挑选今日空闲未使用的设备
+      candidateDeviceIds = deviceService.getCandidateDevices();
+      if (candidateDeviceIds.length === 0) {
+        const allPoolDevices = deviceService.getAllDevices();
+        if (allPoolDevices.length === 0) {
+          // 设备池为空，使用默认检测到的本地设备
+          candidateDeviceIds = [this.getDeviceId()];
+        } else {
+          // 设备池所有设备今日签到名额均已用尽
+          return {
+            success: false,
+            creditsEarned: 0,
+            message: '设备池中所有可用设备今日签到名额均已耗尽，请添加新设备 ID 或明日再试',
+            alreadyCheckedIn: false,
+          };
         }
+      }
+
+      // 限制单次签到最大轮换尝试次数（防止大设备池下的死循环与请求堆积）
+      const MAX_DEVICE_ROTATION_CANDIDATES = 5;
+      if (candidateDeviceIds.length > MAX_DEVICE_ROTATION_CANDIDATES) {
+        logger.info(`设备池候选设备数量 (${candidateDeviceIds.length}) 超过安全上限，本次限制最多轮换尝试 ${MAX_DEVICE_ROTATION_CANDIDATES} 台设备`);
+        candidateDeviceIds = candidateDeviceIds.slice(0, MAX_DEVICE_ROTATION_CANDIDATES);
       }
     }
 
-    if (!result) {
-      // All attempts failed at the network layer. The request may still have
-      // reached the server (response lost on the way back), so re-query the
-      // status: if it now reads checked_in, the claim actually succeeded and
-      // we must NOT report failure (which would mislead the user into
-      // retrying manually and seeing "该设备今日已签到" with no credits).
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      const afterStatus = await this.api.getCheckinStatus(token, host, deviceId).catch(() => null);
-      if (afterStatus?.checkedIn) {
-        logger.info(`Checkin for account ${id}: claim response was lost but server confirms checked_in`);
+    let lastErrorMsg = '';
+    const isBoundMode = Boolean(boundDeviceId && boundDeviceId.trim());
+
+    for (let i = 0; i < candidateDeviceIds.length; i++) {
+      const currentDeviceId = candidateDeviceIds[i];
+      const isLastCandidate = (i === candidateDeviceIds.length - 1);
+
+      // 获取当前设备的并发租约，防止多任务/高并发场景下竞争分配到同一台设备
+      deviceService.acquireDeviceLease(currentDeviceId);
+
+      try {
+        logger.info(
+          `[Checkin] 账号 "${account.nickname}" (ID: ${id}) 正在调度设备 [${currentDeviceId.slice(0, 8)}...] 进行签到 (候选 ${i + 1}/${candidateDeviceIds.length}${isBoundMode ? ', 账号绑定模式' : ', 自动轮换模式'})`
+        );
+
+      // 查询当前账号签到状态
+      let status = await this.api.getCheckinStatus(token, host, currentDeviceId).catch(() => null);
+      if (!status) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        status = await this.api.getCheckinStatus(token, host, currentDeviceId).catch(() => null);
+      }
+      if (!status) {
+        logger.warn(`Checkin aborted for account ${id} on device ${currentDeviceId.slice(0, 8)}: status query failed`);
+        if (!isLastCandidate && !isBoundMode) {
+          continue;
+        }
+        return {
+          success: false,
+          creditsEarned: 0,
+          message: '签到状态查询失败（令牌可能已失效或网络异常），已跳过签到以免占用当日设备名额',
+          alreadyCheckedIn: false,
+          deviceId: currentDeviceId,
+        };
+      }
+
+      if (status.checkedIn) {
+        // 该账号今日已签到
+        deviceService.markDeviceUsed(currentDeviceId);
+        return {
+          success: true,
+          creditsEarned: 0,
+          message: '今日已签到',
+          alreadyCheckedIn: true,
+          deviceId: currentDeviceId,
+        };
+      }
+
+      // 执行签到请求，遇到瞬时网络错误自动重试
+      let result: Awaited<ReturnType<typeof this.api.claimCheckin>> | null = null;
+      let lastClaimError: Error | null = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          result = await this.api.claimCheckin(token, host, currentDeviceId);
+          break;
+        } catch (err) {
+          lastClaimError = err as Error;
+          logger.warn(`Checkin claim attempt ${attempt}/3 for account ${id} failed: ${lastClaimError.message}`);
+          if (attempt < 3) {
+            await new Promise(resolve => setTimeout(resolve, attempt * 2000));
+          }
+        }
+      }
+
+      if (!result) {
+        // 网络层丢失响应，查询二次确认
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        const afterStatus = await this.api.getCheckinStatus(token, host, currentDeviceId).catch(() => null);
+        if (afterStatus?.checkedIn) {
+          logger.info(`Checkin for account ${id}: claim response was lost but server confirms checked_in`);
+          deviceService.markDeviceUsed(currentDeviceId);
+          const db = getDatabase();
+          db.prepare(`
+            UPDATE accounts
+            SET is_checked_in = 1,
+                checkin_credits = COALESCE(checkin_credits, 0) + ?,
+                last_checkin_at = datetime('now'),
+                updated_at = datetime('now')
+            WHERE id = ?
+          `).run(afterStatus.credits || 0, id);
+          try {
+            await this.refreshAccount(id);
+          } catch {
+            // Ignore refresh errors after confirmed checkin
+          }
+          return {
+            success: true,
+            creditsEarned: afterStatus.credits || 0,
+            message: `签到成功（网络波动导致响应丢失，已通过状态查询确认），获得 ${afterStatus.credits || 0} 积分`,
+            alreadyCheckedIn: false,
+            deviceId: currentDeviceId,
+          };
+        }
+
+        if (!isLastCandidate && !isBoundMode) {
+          continue;
+        }
+        throw new Error(`签到失败：网络异常（已重试 3 次），请检查网络后重试。最后错误：${lastClaimError?.message ?? 'unknown'}`);
+      }
+
+      // 检查是否遭遇 9095 限制（当前设备今日已达上限）
+      const is9095 = result.isDeviceLimit
+        || result.code === 9095
+        || result.message?.includes('今日签到名额已被其他账号使用')
+        || result.message?.includes('9095');
+
+      if (is9095) {
+        logger.warn(`设备 ${currentDeviceId.slice(0, 8)}... 遇到 9095 限制（今日名额已耗尽）`);
+        deviceService.markDeviceLimitReached(currentDeviceId);
+
+        if (isBoundMode) {
+          return {
+            success: false,
+            creditsEarned: 0,
+            message: '绑定的专属设备今日签到名额已被占用（错误码 9095），已严格使用该绑定设备未降级',
+            alreadyCheckedIn: false,
+            deviceId: currentDeviceId,
+          };
+        }
+
+        if (!isLastCandidate) {
+          logger.info(`自动轮换降级：设备 ${currentDeviceId.slice(0, 8)}... 遭遇 9095，自动尝试下一个可用设备...`);
+          continue;
+        } else {
+          return {
+            success: false,
+            creditsEarned: 0,
+            message: '所有可用设备今日签到名额均已耗尽（错误码 9095），请明日再试或添加新设备 ID',
+            alreadyCheckedIn: false,
+            deviceId: currentDeviceId,
+          };
+        }
+      }
+
+      // 检查是否遭遇 9074 限制（操作频繁或设备未注册）
+      const is9074 = result.isRateLimit
+        || result.code === 9074
+        || result.message?.includes('9074')
+        || result.message?.includes('操作太过频繁');
+
+      if (is9074) {
+        logger.warn(`设备 ${currentDeviceId.slice(0, 8)}... 遇到 9074 限制（设备未在服务端注册激活或操作过于频繁）`);
+
+        if (isBoundMode) {
+          return {
+            success: false,
+            creditsEarned: 0,
+            message: '绑定的设备未在 Trae 客户端注册激活或操作过于频繁（错误码 9074），请在客户端登录该设备或更换绑定设备',
+            alreadyCheckedIn: false,
+            deviceId: currentDeviceId,
+          };
+        }
+
+        if (!isLastCandidate) {
+          logger.info(`自动轮换降级：设备 ${currentDeviceId.slice(0, 8)}... 遭遇 9074，自动尝试下一个可用设备...`);
+          continue;
+        } else {
+          return {
+            success: false,
+            creditsEarned: 0,
+            message: '所有可用候选设备均无法完成签到（遭遇 9074 设备未注册或频控限制），请在客户端正常登录一次或添加有效设备 ID',
+            alreadyCheckedIn: false,
+            deviceId: currentDeviceId,
+          };
+        }
+      }
+
+      if (result.success) {
+        // 签到成功！
+        deviceService.markDeviceUsed(currentDeviceId);
         const db = getDatabase();
         db.prepare(`
           UPDATE accounts
           SET is_checked_in = 1,
               checkin_credits = COALESCE(checkin_credits, 0) + ?,
               last_checkin_at = datetime('now'),
+              credits_balance = credits_balance + ?,
               updated_at = datetime('now')
           WHERE id = ?
-        `).run(afterStatus.credits || 0, id);
+        `).run(result.creditsEarned, result.creditsEarned, id);
+
+        // Refresh to get updated info
         try {
           await this.refreshAccount(id);
         } catch {
-          // Ignore refresh errors after confirmed checkin
+          // Ignore refresh errors after successful checkin
         }
+
         return {
           success: true,
-          creditsEarned: afterStatus.credits || 0,
-          message: `签到成功（网络波动导致响应丢失，已通过状态查询确认），获得 ${afterStatus.credits || 0} 积分`,
-          alreadyCheckedIn: false,
+          creditsEarned: result.creditsEarned,
+          message: result.alreadyClaimed ? '今日已签到' : `签到成功！获得 ${result.creditsEarned} 积分`,
+          alreadyCheckedIn: result.alreadyClaimed,
+          deviceId: currentDeviceId,
         };
       }
-      throw new Error(`签到失败：网络异常（已重试 3 次），请检查网络后重试。最后错误：${lastClaimError?.message ?? 'unknown'}`);
-    }
 
-    if (result.success) {
-      // Update account status.
-      // NOTE: the claim response does not include a new balance, so we add the
-      // earned credits to the existing balance instead of overwriting it.
-      const db = getDatabase();
-      db.prepare(`
-        UPDATE accounts
-        SET is_checked_in = 1,
-            checkin_credits = COALESCE(checkin_credits, 0) + ?,
-            last_checkin_at = datetime('now'),
-            credits_balance = credits_balance + ?,
-            updated_at = datetime('now')
-        WHERE id = ?
-      `).run(result.creditsEarned, result.creditsEarned, id);
-
-      // Refresh to get updated info
-      try {
-        await this.refreshAccount(id);
-      } catch {
-        // Ignore refresh errors after successful checkin
+        lastErrorMsg = result.message || '签到失败';
+        if (!isLastCandidate && !isBoundMode) {
+          logger.warn(`设备 ${currentDeviceId.slice(0, 8)}... 签到失败 (${lastErrorMsg})，自动尝试下一个设备...`);
+          continue;
+        }
+        break;
+      } finally {
+        // 百分之百释放设备并发租约
+        deviceService.releaseDeviceLease(currentDeviceId);
       }
     }
 
     return {
-      success: result.success,
-      creditsEarned: result.creditsEarned,
-      message: result.success
-        ? (result.alreadyClaimed ? '今日已签到' : `签到成功！获得 ${result.creditsEarned} 积分`)
-        : (result.message || '签到失败'),
-      alreadyCheckedIn: result.alreadyClaimed,
+      success: false,
+      creditsEarned: 0,
+      message: lastErrorMsg || '签到失败',
+      alreadyCheckedIn: false,
     };
   }
 

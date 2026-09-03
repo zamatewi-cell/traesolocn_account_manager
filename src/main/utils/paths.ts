@@ -13,6 +13,22 @@ export const TRAE_INSTALLATIONS = [
     { name: 'Trae CN', appDataDir: 'Trae CN', processName: 'Trae CN.exe' },
 ];
 
+import os from 'os';
+
+function getAppPathSafe(name: 'appData' | 'userData'): string {
+    try {
+        if (app && typeof app.getPath === 'function') {
+            return app.getPath(name);
+        }
+    } catch {
+        // Fallback for non-electron testing environments
+    }
+    if (name === 'appData') {
+        return process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    }
+    return process.env.TEST_USER_DATA_DIR || path.join(os.tmpdir(), 'trae-account-manager-test');
+}
+
 export function getTraeStoragePaths(): Array<{
     name: string;
     appDataDir: string;
@@ -20,7 +36,7 @@ export function getTraeStoragePaths(): Array<{
     backupPath: string;
     processName: string;
 }> {
-    const appData = app.getPath('appData');
+    const appData = getAppPathSafe('appData');
     return TRAE_INSTALLATIONS.map(inst => ({
         name: inst.name,
         appDataDir: inst.appDataDir,
@@ -55,8 +71,12 @@ export function findPreferredTraeStorage(): {
 
 export const PATHS = {
     // App data paths
-    APP_DATA: app.getPath('userData'),
-    DB_PATH: path.join(app.getPath('userData'), 'data.db'),
+    get APP_DATA(): string {
+        return getAppPathSafe('userData');
+    },
+    get DB_PATH(): string {
+        return path.join(getAppPathSafe('userData'), 'data.db');
+    },
 };
 
 // Ensure directories exist

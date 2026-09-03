@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC_CHANNELS } from '../shared/types';
-import type { AccountView, CheckinResult, BatchCheckinResult, LocalAccountView, IpcResponse, Language, AppSettings, UsageRecord, UpdateInfo, UpdateProgress, AutoCheckinStatus, AutoCheckinRecord } from '../shared/types';
+import type { AccountView, DeviceItem, CheckinResult, BatchCheckinResult, LocalAccountView, IpcResponse, Language, AppSettings, UsageRecord, UpdateInfo, UpdateProgress, AutoCheckinStatus, AutoCheckinRecord } from '../shared/types';
 
 // Wrapper function for IPC calls with proper typing
 async function ipcInvoke<T = unknown>(channel: string, ...args: unknown[]): Promise<IpcResponse<T>> {
@@ -37,11 +37,36 @@ const electronAPI = {
       ipcInvoke<AccountView>(IPC_CHANNELS.ACCOUNT_SWITCH, { id, ...options }),
     refresh: (id: number): Promise<IpcResponse<AccountView>> => ipcInvoke<AccountView>(IPC_CHANNELS.ACCOUNT_REFRESH, { id }),
     refreshAll: (): Promise<IpcResponse<AccountView[]>> => ipcInvoke<AccountView[]>(IPC_CHANNELS.ACCOUNT_REFRESH_ALL),
+    setBoundDevice: (accountId: number, boundDeviceId: string | null): Promise<IpcResponse<AccountView>> =>
+      ipcInvoke<AccountView>(IPC_CHANNELS.ACCOUNT_SET_BOUND_DEVICE, { accountId, boundDeviceId }),
     onAccountsUpdated: (callback: () => void): (() => void) => {
       const listener = () => callback();
       ipcRenderer.on(IPC_CHANNELS.ACCOUNTS_UPDATED, listener);
       return () => {
         ipcRenderer.removeListener(IPC_CHANNELS.ACCOUNTS_UPDATED, listener);
+      };
+    },
+  },
+
+  // Device pool operations
+  devices: {
+    list: (): Promise<IpcResponse<DeviceItem[]>> =>
+      ipcInvoke<DeviceItem[]>(IPC_CHANNELS.DEVICE_LIST),
+    add: (deviceId: string, label?: string): Promise<IpcResponse<DeviceItem>> =>
+      ipcInvoke<DeviceItem>(IPC_CHANNELS.DEVICE_ADD, { deviceId, label }),
+    update: (id: number, label: string): Promise<IpcResponse<DeviceItem>> =>
+      ipcInvoke<DeviceItem>(IPC_CHANNELS.DEVICE_UPDATE, { id, label }),
+    delete: (id: number): Promise<IpcResponse> =>
+      ipcInvoke(IPC_CHANNELS.DEVICE_DELETE, { id }),
+    scanLocal: (): Promise<IpcResponse<DeviceItem[]>> =>
+      ipcInvoke<DeviceItem[]>(IPC_CHANNELS.DEVICE_SCAN_LOCAL),
+    test: (deviceId: string): Promise<IpcResponse<{ success: boolean; message: string; usedToday: boolean }>> =>
+      ipcInvoke<{ success: boolean; message: string; usedToday: boolean }>(IPC_CHANNELS.DEVICE_TEST, { deviceId }),
+    onDevicesUpdated: (callback: () => void): (() => void) => {
+      const listener = () => callback();
+      ipcRenderer.on(IPC_CHANNELS.DEVICES_UPDATED, listener);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.DEVICES_UPDATED, listener);
       };
     },
   },

@@ -24,9 +24,22 @@ export interface Account {
   tokenExpiredAt: string | null;
   source: 'oauth' | 'token_import' | 'local_import';
   installName?: string;
+  boundDeviceId?: string | null;
   createdAt: string;
   updatedAt: string;
   lastRefreshedAt: string | null;
+}
+
+export interface DeviceItem {
+  id: number;
+  deviceId: string;
+  label: string;
+  isLocal: boolean;
+  lastUsedAt: string | null;
+  usedToday: boolean;
+  todayDate?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /** Account data safe to expose to the renderer (no reusable credentials). */
@@ -79,6 +92,7 @@ export interface CheckinResult {
   creditsEarned: number;
   newBalance: number;
   message: string;
+  deviceId?: string;
 }
 
 export interface BatchCheckinResult {
@@ -166,6 +180,7 @@ export interface ExportAccountEntry {
   credits_balance?: number;
   source?: string;
   install_name?: string | null;
+  bound_device_id?: string | null;
   entitlement_packs?: EntitlementPack[] | null;
   /** Complete decrypted auth blob from storage.json (credential-bearing) */
   trae_auth_raw?: TraeAuthData | null;
@@ -240,6 +255,7 @@ export interface AutoCheckinAccountResult {
   alreadyClaimed: boolean;
   creditsEarned: number;
   message: string;
+  deviceId?: string;
 }
 
 // One automatic check-in execution (scheduled run or manual test run)
@@ -356,6 +372,14 @@ export const IPC_CHANNELS = {
   AUTOCHECKIN_GET_RECORDS: 'autocheckin:get-records',
   AUTOCHECKIN_CLEAR_RECORDS: 'autocheckin:clear-records',
   AUTOCHECKIN_COMPLETED: 'autocheckin:completed',
+  DEVICE_LIST: 'device:list',
+  DEVICE_ADD: 'device:add',
+  DEVICE_UPDATE: 'device:update',
+  DEVICE_DELETE: 'device:delete',
+  DEVICE_SCAN_LOCAL: 'device:scan-local',
+  DEVICE_TEST: 'device:test',
+  DEVICES_UPDATED: 'devices:updated',
+  ACCOUNT_SET_BOUND_DEVICE: 'account:set-bound-device',
 } as const;
 
 // IPC response wrapper

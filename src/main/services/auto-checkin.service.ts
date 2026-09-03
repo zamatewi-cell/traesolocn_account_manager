@@ -280,6 +280,7 @@ export class AutoCheckinService {
       alreadyClaimed: r.alreadyClaimed,
       creditsEarned: r.creditsEarned,
       message: r.message ?? '',
+      deviceId: r.deviceId,
     }));
 
     const runAtLocal = this.formatLocalIso(runAt);

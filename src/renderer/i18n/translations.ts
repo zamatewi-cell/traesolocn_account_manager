@@ -103,6 +103,9 @@ export interface Translations {
     statRemainingCredits: string;
     statUsageRate: string;
     statTotalUsage: string;
+    boundDevice: string;
+    autoRotate: string;
+    deviceBoundSuccess: string;
   };
 
   // Batch checkin page
@@ -123,6 +126,7 @@ export interface Translations {
     checkinSuccess: string;
     alreadyCheckedToday: string;
     checkinFailed: string;
+    usedDevice: (deviceId: string) => string;
   };
 
   // Statistics page
@@ -210,6 +214,31 @@ export interface Translations {
     updateDownloadFailed: string;
     updateInstallFailed: string;
     updateNoInstaller: string;
+    devicePoolTitle: string;
+    devicePoolSubtitle: string;
+    scanLocalDevices: string;
+    scanningLocalDevices: string;
+    addDevice: string;
+    deviceId: string;
+    deviceLabel: string;
+    deviceLabelPlaceholder: string;
+    deviceIdPlaceholder: string;
+    deviceSource: string;
+    deviceLocal: string;
+    deviceExternal: string;
+    deviceStatus: string;
+    deviceIdle: string;
+    deviceUsed: string;
+    deviceLastUsed: string;
+    testDevice: string;
+    testingDevice: string;
+    deleteDevice: string;
+    noDevices: string;
+    deviceAdded: string;
+    deviceUpdated: string;
+    deviceDeleted: string;
+    deviceTested: string;
+    deleteDeviceConfirm: string;
   };
 
   // Add account dialog
@@ -381,6 +410,9 @@ const en: Translations = {
     statRemainingCredits: 'Remaining Credits',
     statUsageRate: 'Usage Rate',
     statTotalUsage: 'Total Usage',
+    boundDevice: 'Bound Device',
+    autoRotate: 'Auto Rotate (Recommended)',
+    deviceBoundSuccess: 'Bound device updated successfully',
   },
 
   batchCheckin: {
@@ -400,6 +432,7 @@ const en: Translations = {
     checkinSuccess: 'Checked in successfully',
     alreadyCheckedToday: 'Already checked in today',
     checkinFailed: 'Checkin failed',
+    usedDevice: (deviceId) => `Device: ${deviceId}`,
   },
 
   stats: {
@@ -485,6 +518,31 @@ const en: Translations = {
     updateDownloadFailed: 'Failed to download update',
     updateInstallFailed: 'Failed to launch installer',
     updateNoInstaller: 'No installer attached to this release',
+    devicePoolTitle: 'Device ID Pool',
+    devicePoolSubtitle: 'Manage Trae device IDs across machines. Checkins prioritize idle devices to bypass the 9095 device checkin limit.',
+    scanLocalDevices: 'Scan Local Trae',
+    scanningLocalDevices: 'Scanning...',
+    addDevice: 'Add Device ID',
+    deviceId: 'Device ID',
+    deviceLabel: 'Label / Note',
+    deviceLabelPlaceholder: 'e.g. Work Laptop, Standby Dev',
+    deviceIdPlaceholder: 'Enter valid Trae device ID',
+    deviceSource: 'Source',
+    deviceLocal: 'Local Built-in',
+    deviceExternal: 'External Import',
+    deviceStatus: "Today's Status",
+    deviceIdle: 'Idle & Available',
+    deviceUsed: 'Checked In Today',
+    deviceLastUsed: 'Last Checkin',
+    testDevice: 'Test',
+    testingDevice: 'Testing...',
+    deleteDevice: 'Delete',
+    noDevices: 'No devices found in pool',
+    deviceAdded: 'Device added successfully',
+    deviceUpdated: 'Device note updated successfully',
+    deviceDeleted: 'Device deleted successfully',
+    deviceTested: 'Device is valid and ready',
+    deleteDeviceConfirm: 'Are you sure you want to delete this external device?',
   },
 
   addAccount: {
@@ -654,6 +712,9 @@ const zh: Translations = {
     statRemainingCredits: '剩余积分',
     statUsageRate: '总使用率',
     statTotalUsage: '累计用量',
+    boundDevice: '绑定设备',
+    autoRotate: '自动轮换（推荐）',
+    deviceBoundSuccess: '账号绑定设备已更新',
   },
 
   batchCheckin: {
@@ -673,6 +734,7 @@ const zh: Translations = {
     checkinSuccess: '签到成功',
     alreadyCheckedToday: '今日已签到',
     checkinFailed: '签到失败',
+    usedDevice: (deviceId) => `生效设备：${deviceId}`,
   },
 
   stats: {
@@ -758,6 +820,31 @@ const zh: Translations = {
     updateDownloadFailed: '下载更新失败',
     updateInstallFailed: '启动安装程序失败',
     updateNoInstaller: '该版本未附带安装包',
+    devicePoolTitle: '设备 ID 池管理 (Device ID Pool)',
+    devicePoolSubtitle: '管理多台设备的 Trae 设备 ID。签到时优先使用空闲设备，解决单设备每日仅限签到一个账号的限制（9095）。',
+    scanLocalDevices: '扫描本地设备',
+    scanningLocalDevices: '正在扫描...',
+    addDevice: '添加设备 ID',
+    deviceId: '设备 ID',
+    deviceLabel: '备注名称',
+    deviceLabelPlaceholder: '例如：办公笔记本、测试备用机',
+    deviceIdPlaceholder: '输入合法 Trae 设备 ID',
+    deviceSource: '设备来源',
+    deviceLocal: '本地内置',
+    deviceExternal: '外部导入',
+    deviceStatus: '今日状态',
+    deviceIdle: '空闲可用',
+    deviceUsed: '今日已签到',
+    deviceLastUsed: '最近签到',
+    testDevice: '测试',
+    testingDevice: '正在测试...',
+    deleteDevice: '删除',
+    noDevices: '设备池中暂无设备 ID',
+    deviceAdded: '设备添加成功',
+    deviceUpdated: '设备备注已更新',
+    deviceDeleted: '设备已删除',
+    deviceTested: '设备状态正常',
+    deleteDeviceConfirm: '确定要删除该外部设备吗？',
   },
 
   addAccount: {
