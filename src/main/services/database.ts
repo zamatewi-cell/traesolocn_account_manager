@@ -26,10 +26,12 @@ export function initDatabase(): Database.Database {
 
   logger.info('Initializing database at:', PATHS.DB_PATH);
 
-  dbInstance = new Database(PATHS.DB_PATH);
+  dbInstance = new Database(PATHS.DB_PATH, { timeout: 5000 });
 
   // Enable WAL mode for better performance
   dbInstance.pragma('journal_mode = WAL');
+  dbInstance.pragma('busy_timeout = 5000');
+  dbInstance.pragma('wal_autocheckpoint = 1000');
   dbInstance.pragma('foreign_keys = ON');
 
   // Create schema
@@ -69,6 +71,9 @@ function createSchema(db: Database.Database): void {
       pay_expire_at TEXT,
       entitlement_packs TEXT,
       token_expired_at TEXT,
+      today_usage REAL NOT NULL DEFAULT 0,
+      total_usage REAL NOT NULL DEFAULT 0,
+      bound_device_id TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       last_refreshed_at TEXT,
@@ -81,6 +86,25 @@ function createSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_active ON accounts(is_active);
     CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id);
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted ON accounts(deleted_at);
+  `);
+
+  // Devices table for Device ID Pool management
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS devices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT UNIQUE NOT NULL,
+      label TEXT NOT NULL DEFAULT '',
+      is_local INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      used_today INTEGER NOT NULL DEFAULT 0,
+      today_date TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_devices_device_id ON devices(device_id);
   `);
 
   // Auto check-in execution history (30-day rolling retention)
@@ -127,6 +151,7 @@ function runMigrations(db: Database.Database): void {
     // Required for account switching: Trae validates userRegion/scope/loginScope
     // fields and falls back to logged-out state when they are missing.
     { col: 'auth_blob_encrypted', def: 'BLOB' },
+    { col: 'bound_device_id', def: 'TEXT' },
   ];
 
   for (const { col, def } of migrations) {

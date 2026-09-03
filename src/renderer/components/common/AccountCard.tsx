@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { CheckCircle2, RefreshCw, LogIn, Trash2, Coins, MoreVertical, Check, XCircle, Clock, Zap, BarChart3, ReceiptText, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { CheckCircle2, RefreshCw, LogIn, Trash2, Coins, MoreVertical, Check, XCircle, Clock, Zap, BarChart3, ReceiptText, Loader2, ChevronLeft, ChevronRight, Cpu } from 'lucide-react';
 import { cn, formatNumber, formatDate, getPayStatusType, getPayStatusColor, getPayStatusBadgeClass, getPayStatusLabel, getQuotaDisplay, formatExpiration, getEntitlementTypeLabel } from '../../lib/utils';
 import { AccountAvatar } from './AccountAvatar';
 import { useLanguage } from '../../contexts/LanguageContext';
-import type { AccountView, UsageRecord } from '../../../shared/types';
+import { useToast } from '../../contexts/ToastContext';
+import { useAccounts } from '../../hooks/useAccounts';
+import type { AccountView, UsageRecord, DeviceItem } from '../../../shared/types';
 
 interface AccountCardProps {
   account: AccountView;
@@ -14,6 +16,7 @@ interface AccountCardProps {
   onRefresh: () => void;
   onSwitch: () => void;
   onDelete: () => void;
+  devices?: DeviceItem[];
 }
 
 type UsageRange = 'today' | '7d' | '30d';
@@ -40,8 +43,10 @@ function getRangeStart(range: UsageRange): number {
   return Math.floor((now.getTime() - days * 24 * 3600 * 1000) / 1000);
 }
 
-export function AccountCard({ account, isCheckingIn, isSwitching, onCheckin, onRefresh, onSwitch, onDelete }: AccountCardProps) {
+export function AccountCard({ account, isCheckingIn, isSwitching, onCheckin, onRefresh, onSwitch, onDelete, devices: propDevices }: AccountCardProps) {
   const { t } = useLanguage();
+  const { showToast } = useToast();
+  const { setBoundDevice } = useAccounts();
   const [showMenu, setShowMenu] = useState(false);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
@@ -54,6 +59,57 @@ export function AccountCard({ account, isCheckingIn, isSwitching, onCheckin, onR
   const [usageRange, setUsageRange] = useState<UsageRange>('7d');
   const [usageLoading, setUsageLoading] = useState(false);
   const [usageError, setUsageError] = useState<string | null>(null);
+
+  // Device binding state
+  const [internalDevices, setInternalDevices] = useState<DeviceItem[]>([]);
+  const devices = propDevices || internalDevices;
+  const [boundDeviceId, setBoundDeviceId] = useState<string>(account.boundDeviceId || '');
+  const [savingDevice, setSavingDevice] = useState(false);
+
+  useEffect(() => {
+    setBoundDeviceId(account.boundDeviceId || '');
+  }, [account.boundDeviceId]);
+
+  useEffect(() => {
+    if (!propDevices) {
+      window.electronAPI.devices.list().then(res => {
+        if (res.success && res.data) {
+          setInternalDevices(res.data);
+        }
+      });
+    }
+    const unsubscribe = window.electronAPI.devices.onDevicesUpdated?.(() => {
+      window.electronAPI.devices.list().then(res => {
+        if (res.success && res.data) {
+          setInternalDevices(res.data);
+        }
+      });
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, [propDevices]);
+
+  const handleDeviceChange = async (newDeviceId: string) => {
+    setSavingDevice(true);
+    try {
+      const val = newDeviceId.trim() ? newDeviceId.trim() : null;
+      const ok = await setBoundDevice(account.id, val);
+      if (ok) {
+        setBoundDeviceId(newDeviceId);
+        showToast(t.accounts.deviceBoundSuccess, 'success');
+      } else {
+        setBoundDeviceId(account.boundDeviceId || '');
+        showToast('更新绑定设备失败', 'error');
+      }
+    } catch (err) {
+      setBoundDeviceId(account.boundDeviceId || '');
+      showToast((err as Error).message || '更新绑定设备失败', 'error');
+    } finally {
+      setSavingDevice(false);
+    }
+  };
+
   const payStatusType = getPayStatusType(account.payStatus);
   const payStatusColor = getPayStatusColor(payStatusType);
   const payStatusBadgeClass = getPayStatusBadgeClass(payStatusType);
@@ -264,6 +320,44 @@ export function AccountCard({ account, isCheckingIn, isSwitching, onCheckin, onR
               {t.accounts.lastCheckin(formattedDate)}
             </p>
           )}
+
+          {/* Device binding selector */}
+          <div
+            className="flex items-center gap-2 mt-2 pt-2 border-t border-surface/5 flex-wrap"
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-1.5 text-xs text-text-tertiary">
+              <Cpu className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+              <span>{t.accounts.boundDevice}:</span>
+            </div>
+            <select
+              value={boundDeviceId}
+              onChange={(e) => handleDeviceChange(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              disabled={savingDevice}
+              className="bg-surface/5 hover:bg-surface/10 text-text-primary text-xs rounded-lg px-2.5 py-1 border border-surface/10 focus:outline-none focus:border-indigo-500/50 cursor-pointer transition-colors max-w-[260px] truncate"
+            >
+              <option value="">{t.accounts.autoRotate}</option>
+              {boundDeviceId && !devices.some(d => d.deviceId === boundDeviceId) && (
+                <option value={boundDeviceId}>
+                  {boundDeviceId.length > 8 ? `${boundDeviceId.slice(0, 8)}...` : boundDeviceId} (已失效/不存在)
+                </option>
+              )}
+              {devices.map(d => {
+                const shortId = d.deviceId.length > 8 ? `${d.deviceId.slice(0, 8)}...` : d.deviceId;
+                const sourceTag = d.isLocal ? t.settings.deviceLocal : t.settings.deviceExternal;
+                const note = d.label ? `${d.label} ` : '';
+                return (
+                  <option key={d.id} value={d.deviceId}>
+                    {note}({shortId}) [{sourceTag}]
+                  </option>
+                );
+              })}
+            </select>
+            {savingDevice && <RefreshCw className="w-3 h-3 text-indigo-400 animate-spin" />}
+          </div>
         </div>
 
         {/* Actions */}

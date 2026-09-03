@@ -57,6 +57,7 @@ export class CheckinService {
         creditsEarned: result.creditsEarned,
         newBalance: account.creditsBalance + result.creditsEarned,
         message: result.message,
+        deviceId: result.deviceId,
       };
     } catch (err) {
       logger.error(`Checkin failed for account ${accountId}:`, err);

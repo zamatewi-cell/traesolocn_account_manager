@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Plus, Users, Download, CheckSquare, RefreshCw, Coins, TrendingUp, PieChart, Zap } from 'lucide-react';
 import { AccountCard } from '../components/common/AccountCard';
 import { useAccounts } from '../hooks/useAccounts';
+import { useDevices } from '../hooks/useDevices';
 import { useToast } from '../contexts/ToastContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { cn, formatNumber } from '../lib/utils';
@@ -16,6 +17,7 @@ export function AccountListPage({ onOpenAddDialog }: AccountListPageProps) {
   const [selectedForBatch, setSelectedForBatch] = useState<Set<number>>(new Set());
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [exportPassword, setExportPassword] = useState('');
+  const { devices } = useDevices();
   const {
     accounts,
     loading,
@@ -258,6 +260,7 @@ export function AccountListPage({ onOpenAddDialog }: AccountListPageProps) {
                 <div className="flex-1">
                   <AccountCard
                     account={account}
+                    devices={devices}
                     isCheckingIn={checkingIn.has(account.id)}
                     isSwitching={switching.has(account.id)}
                     onCheckin={() => checkinSingle(account.id)}

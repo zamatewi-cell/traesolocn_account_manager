@@ -1,7 +1,8 @@
-import { ipcMain, dialog, app } from 'electron';
+import { ipcMain, dialog, app, BrowserWindow } from 'electron';
 import { getAccountService } from '../services/account.service';
 import { getAuthService } from '../services/auth.service';
 import { getTraeworkService } from '../services/traework.service';
+import { getDeviceService } from '../services/device.service';
 import { getCheckinService } from '../services/checkin.service';
 import { getUpdateService } from '../services/update.service';
 import { getAutoCheckinService } from '../services/auto-checkin.service';
@@ -210,6 +211,7 @@ export function registerAccountIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.CHECKIN_SINGLE, async (_event, { id }: { id: number }): Promise<AnyResponse> => {
     try {
       const result = await checkinService.checkinSingle(id);
+      broadcastDevicesUpdated();
       // IPC succeeded even when the server rejected the check-in. Keep the
       // domain result in data so the renderer can show the precise reason
       // (for example device-scoped code 9095) instead of a generic error.
@@ -224,6 +226,7 @@ export function registerAccountIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.CHECKIN_BATCH, async (_event, { ids }: { ids: number[] }): Promise<AnyResponse> => {
     try {
       const result = await checkinService.checkinBatch(ids);
+      broadcastDevicesUpdated();
       return { success: true, data: result };
     } catch (err) {
       logger.error('Batch checkin failed:', err);
@@ -444,6 +447,113 @@ export function registerAccountIpcHandlers(): void {
       updateService.openReleasePage(url);
       return { success: true };
     } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  const deviceService = getDeviceService();
+
+  function broadcastDevicesUpdated(): void {
+    for (const win of BrowserWindow.getAllWindows()) {
+      try {
+        win.webContents.send(IPC_CHANNELS.DEVICES_UPDATED);
+      } catch {
+        // 忽略已销毁的窗口
+      }
+    }
+  }
+
+  // Get all devices
+  ipcMain.handle(IPC_CHANNELS.DEVICE_LIST, async (): Promise<AnyResponse> => {
+    try {
+      const devices = deviceService.getAllDevices();
+      return { success: true, data: devices };
+    } catch (err) {
+      logger.error('Failed to get devices:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Add external device
+  ipcMain.handle(IPC_CHANNELS.DEVICE_ADD, async (_event, { deviceId, label }: { deviceId: string; label?: string }): Promise<AnyResponse> => {
+    try {
+      const device = deviceService.addDevice(deviceId, label);
+      broadcastDevicesUpdated();
+      return { success: true, data: device };
+    } catch (err) {
+      logger.error('Failed to add device:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Update device label
+  ipcMain.handle(IPC_CHANNELS.DEVICE_UPDATE, async (_event, { id, label }: { id: number; label: string }): Promise<AnyResponse> => {
+    try {
+      const device = deviceService.updateDevice(id, label);
+      broadcastDevicesUpdated();
+      return { success: true, data: device };
+    } catch (err) {
+      logger.error('Failed to update device:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Delete external device
+  ipcMain.handle(IPC_CHANNELS.DEVICE_DELETE, async (_event, { id }: { id: number }): Promise<AnyResponse> => {
+    try {
+      deviceService.deleteDevice(id);
+      broadcastDevicesUpdated();
+      for (const win of BrowserWindow.getAllWindows()) {
+        try {
+          win.webContents.send(IPC_CHANNELS.ACCOUNTS_UPDATED);
+        } catch {
+          // 忽略已销毁的窗口
+        }
+      }
+      return { success: true };
+    } catch (err) {
+      logger.error('Failed to delete device:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Scan and sync local devices
+  ipcMain.handle(IPC_CHANNELS.DEVICE_SCAN_LOCAL, async (): Promise<AnyResponse> => {
+    try {
+      const devices = deviceService.scanAndSyncLocalDevices();
+      broadcastDevicesUpdated();
+      return { success: true, data: devices };
+    } catch (err) {
+      logger.error('Failed to scan local devices:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Test device
+  ipcMain.handle(IPC_CHANNELS.DEVICE_TEST, async (_event, { deviceId }: { deviceId: string }): Promise<AnyResponse> => {
+    try {
+      const result = deviceService.testDevice(deviceId);
+      return { success: true, data: result };
+    } catch (err) {
+      logger.error('Device test failed:', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Set account bound device
+  ipcMain.handle(IPC_CHANNELS.ACCOUNT_SET_BOUND_DEVICE, async (_event, { accountId, boundDeviceId }: { accountId: number; boundDeviceId: string | null }): Promise<AnyResponse> => {
+    try {
+      const updated = accountService.setBoundDevice(accountId, boundDeviceId);
+      for (const win of BrowserWindow.getAllWindows()) {
+        try {
+          win.webContents.send(IPC_CHANNELS.ACCOUNTS_UPDATED, { accountId });
+        } catch {
+          // 忽略已销毁的窗口
+        }
+      }
+      return { success: true, data: toAccountView(updated) };
+    } catch (err) {
+      logger.error('Failed to set bound device:', err);
       return { success: false, error: (err as Error).message };
     }
   });

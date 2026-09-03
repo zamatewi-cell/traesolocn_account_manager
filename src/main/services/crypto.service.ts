@@ -77,7 +77,7 @@ class CryptoServiceImpl implements CryptoService {
   private isAvailable: boolean;
 
   constructor() {
-    this.isAvailable = safeStorage.isEncryptionAvailable();
+    this.isAvailable = Boolean(safeStorage && typeof safeStorage.isEncryptionAvailable === 'function' && safeStorage.isEncryptionAvailable());
     logger.info('SafeStorage encryption available:', this.isAvailable);
   }
 

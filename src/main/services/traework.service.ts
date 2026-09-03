@@ -573,6 +573,59 @@ export class TraeworkService {
   }
 
   /**
+   * 扫描并提取所有本地已安装 Trae 客户端（Trae CN、TRAE SOLO CN 等）的设备 ID，去重返回。
+   * 支持标准安装、备份文件容错以及动态 Roaming 目录发现。
+   */
+  getAllTraeDeviceIds(): Array<{ deviceId: string; installName: string }> {
+    const map = new Map<string, string>();
+
+    const checkData = (data: Record<string, unknown> | null, installName: string) => {
+      if (!data) return;
+      const deviceKeys = Object.keys(data).filter(k => k.startsWith('iCubeAuthInfo://icube-dc:'));
+      for (const key of deviceKeys) {
+        const deviceId = key.split('icube-dc:')[1]?.trim();
+        if (deviceId && deviceId.length >= 6 && deviceId.length <= 128 && /^[a-zA-Z0-9_.:-]+$/.test(deviceId) && !map.has(deviceId)) {
+          map.set(deviceId, installName);
+        }
+      }
+    };
+
+    // 1. 已知常规安装与存储
+    for (const { installName, storagePath, data } of this.readAllStorages()) {
+      checkData(data, installName);
+      // 检查备份文件容错
+      if (storagePath) {
+        const backupPath = storagePath + '.bak';
+        if (fs.existsSync(backupPath)) {
+          checkData(this.readStorageFromPath(backupPath), `${installName} (备份)`);
+        }
+      }
+    }
+
+    // 2. 动态扫描 %APPDATA% 下任何包含 trae 的目录（作为非标准安装目录的降级容错）
+    if (map.size === 0 && !process.env.TEST_USER_DATA_DIR) {
+      try {
+        const appData = process.env.APPDATA;
+        if (appData && fs.existsSync(appData)) {
+          const entries = fs.readdirSync(appData, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isDirectory() && /trae/i.test(entry.name) && !/account\s*manager/i.test(entry.name) && !/tools/i.test(entry.name)) {
+              const candidateStorage = path.join(appData, entry.name, 'User', 'globalStorage', 'storage.json');
+              if (fs.existsSync(candidateStorage)) {
+                checkData(this.readStorageFromPath(candidateStorage), entry.name);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        logger.warn('Dynamic Trae storage scanning encountered error:', (err as Error).message);
+      }
+    }
+
+    return Array.from(map.entries()).map(([deviceId, installName]) => ({ deviceId, installName }));
+  }
+
+  /**
    * Get the raw encrypted token from first available storage (legacy).
    * @deprecated Use getLocalTokenFromPath() for specific path.
    */

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { CheckCircle2, Play, Loader2, CheckSquare, Square, Clock, Award } from 'lucide-react';
+import { CheckCircle2, Play, Loader2, CheckSquare, Square, Clock, Award, Cpu } from 'lucide-react';
 import { useAccounts } from '../hooks/useAccounts';
 import { AccountAvatar } from '../components/common/AccountAvatar';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -11,6 +11,7 @@ interface CheckinProgress {
   status: 'pending' | 'checking' | 'success' | 'already' | 'failed';
   message?: string;
   creditsEarned?: number;
+  deviceId?: string;
 }
 
 export function BatchCheckinPage() {
@@ -71,6 +72,7 @@ export function BatchCheckinPage() {
             : 'failed',
           message: item.message || (item.success ? t.batchCheckin.checkinSuccess : t.batchCheckin.checkinFailed),
           creditsEarned: item.creditsEarned,
+          deviceId: item.deviceId,
         });
       }
       for (const item of result.errors) {
@@ -228,6 +230,12 @@ export function BatchCheckinPage() {
 
                   {prog && (
                     <div className="flex items-center gap-2">
+                      {prog.deviceId && (
+                        <span className="flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-md bg-surface/10 text-text-secondary border border-surface/10 shrink-0" title={`生效设备 ID: ${prog.deviceId}`}>
+                          <Cpu className="w-3 h-3 text-indigo-400" />
+                          <span>{prog.deviceId.length > 8 ? `${prog.deviceId.slice(0, 8)}...` : prog.deviceId}</span>
+                        </span>
+                      )}
                       {getStatusIcon(prog.status)}
                       {prog.message && (
                         <span className={cn(

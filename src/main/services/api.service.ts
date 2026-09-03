@@ -442,6 +442,9 @@ export class ApiService {
     creditsEarned: number;
     newBalance: number;
     message?: string;
+    isDeviceLimit?: boolean;
+    isRateLimit?: boolean;
+    code?: number;
   }> {
     const origin = resolveOrigin(host);
     try {
@@ -474,7 +477,15 @@ export class ApiService {
       // device IDs the server does not recognize (e.g. the random fallback ID
       // used when no local Trae session has ever registered this machine).
       if (code === 9074) {
-        throw new Error('操作太频繁 (9074)；若本机从未登录过 Trae 客户端，请先登录一次再签到');
+        return {
+          success: false,
+          alreadyClaimed: false,
+          creditsEarned: 0,
+          newBalance: 0,
+          message: '操作过于频繁或设备未在 Trae 服务端注册激活（错误码 9074）',
+          isRateLimit: true,
+          code: 9074,
+        };
       }
 
       // 9095 is device-scoped, not account-scoped. Confirm the current account
@@ -497,6 +508,8 @@ export class ApiService {
           creditsEarned: 0,
           newBalance: 0,
           message: '当前设备今日签到名额已被其他账号使用，请明日再试',
+          isDeviceLimit: true,
+          code: 9095,
         };
       }
 

@@ -53,7 +53,15 @@ export function formatDate(dateStr: string | null | undefined): string | null {
   if (!dateStr) return null;
   
   try {
-    const date = new Date(dateStr);
+    // 兼容 SQLite datetime('now') 格式 ("YYYY-MM-DD HH:mm:ss")
+    // 无 T 和 Z 的 UTC 格式字符串在部分环境中会被误当作本地时间解析，规范化为 ISO 8601 UTC
+    const normalized = (dateStr.includes(' ') && !dateStr.includes('T'))
+      ? dateStr.replace(' ', 'T') + 'Z'
+      : dateStr;
+    const date = new Date(normalized);
+    if (isNaN(date.getTime())) {
+      return dateStr;
+    }
     return date.toLocaleString();
   } catch {
     return dateStr;

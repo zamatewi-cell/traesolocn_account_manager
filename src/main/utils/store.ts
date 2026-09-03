@@ -7,7 +7,14 @@ let storeCache: Record<string, any> | null = null;
 
 function getStorePath(): string {
   if (!storePath) {
-    const userDataPath = app.getPath('userData');
+    let userDataPath: string;
+    try {
+      userDataPath = (app && typeof app.getPath === 'function')
+        ? app.getPath('userData')
+        : (process.env.TEST_USER_DATA_DIR || path.join(require('os').tmpdir(), 'trae-account-manager-test'));
+    } catch {
+      userDataPath = process.env.TEST_USER_DATA_DIR || path.join(require('os').tmpdir(), 'trae-account-manager-test');
+    }
     storePath = path.join(userDataPath, 'config.json');
   }
   return storePath;
