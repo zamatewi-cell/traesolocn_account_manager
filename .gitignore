@@ -23,5 +23,9 @@ src/shared/*.js.map
 Thumbs.db
 .DS_Store
 
+/.idea/
+/.workbuddy/
+
 # Agent workspace artifacts
 .agents/
+
