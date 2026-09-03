@@ -1,6 +1,7 @@
 import { BrowserWindow, shell } from 'electron';
 import path from 'path';
 import { logger } from './utils/logger';
+import { isAppQuitting } from './tray';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -130,6 +131,22 @@ export function createMainWindow(): BrowserWindow {
 
   win.on('show', () => {
     logger.info('[DIAG] window show event fired');
+  });
+
+  // Intercept window close so clicking the × (or invoking window:close via IPC)
+  // hides the UI to the system tray instead of killing the process. The actual
+  // shutdown path goes through the tray's "Quit" item, which sets
+  // isAppQuitting() = true and lets the close pass through.
+  win.on('close', (event) => {
+    if (isAppQuitting()) {
+      logger.info('[DIAG] window close during shutdown -> allowing destroy');
+      return;
+    }
+    event.preventDefault();
+    if (win.isVisible()) {
+      win.hide();
+      logger.info('[DIAG] close intercepted -> window hidden to tray');
+    }
   });
 
   win.on('closed', () => {

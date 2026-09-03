@@ -1,5 +1,6 @@
 import { app, BrowserWindow } from 'electron';
 import { createMainWindow, getMainWindow } from './window';
+import { createTray, destroyTray } from './tray';
 import { initDatabase, closeDatabase } from './services/database';
 import { registerAllIpcHandlers } from './ipc';
 import { ensureDirectories } from './utils/paths';
@@ -98,6 +99,11 @@ if (!gotTheLock) {
     // Create main window
     createMainWindow();
 
+    // Create system tray (always-on-resident). The tray provides an explicit
+    // "Quit" entry so the user still has a clean shutdown path even though
+    // window-all-closed no longer terminates the process.
+    createTray({ getMainWindow, createMainWindow });
+
     // Silent startup update check. On machines that cannot reach GitHub the
     // jsDelivr mirror fallback still runs; failures are logged only. When a
     // newer version is found, push it to the renderer for a toast.
@@ -125,16 +131,16 @@ if (!gotTheLock) {
     });
   });
 
-  // Windows/Linux: quit when all windows closed
+  // Tray-resident app: closing the last window no longer terminates the
+  // process. The user can restore the window from the tray, or pick "Quit"
+  // in the tray menu to actually exit.
   app.on('window-all-closed', () => {
-    logger.warn('[DIAG] window-all-closed fired');
-    if (process.platform !== 'darwin') {
-      app.quit();
-    }
+    logger.warn('[DIAG] window-all-closed fired (kept alive via tray)');
   });
 
   app.on('before-quit', () => {
     logger.warn('[DIAG] before-quit fired');
+    destroyTray();
     closeDatabase();
     logger.info('App quitting...');
   });

@@ -31,6 +31,12 @@
       "dist/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "resources/icon.ico",
+        "to": "icon.ico"
+      }
+    ],
     "asar": true,
     "asarUnpack": [
       "**/*.node"
